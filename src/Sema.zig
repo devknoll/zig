@@ -36917,6 +36917,7 @@ pub fn typeHasOnePossibleValue(sema: *Sema, ty: Type) CompileError!?Value {
             .type_inferred_error_set,
             .type_opaque,
             .type_function,
+            .type_async_frame,
             => null,
 
             .simple_type, // handled above
