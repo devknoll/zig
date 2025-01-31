@@ -956,6 +956,7 @@ pub const DeclGen = struct {
             .func_type,
             .error_set_type,
             .inferred_error_set_type,
+            .async_frame_type,
             // memoization, not values
             .memoized_call,
             => unreachable,
@@ -1805,6 +1806,7 @@ pub const DeclGen = struct {
                 .anyframe_type,
                 .opaque_type,
                 .func_type,
+                .async_frame_type,
                 => unreachable,
 
                 .undef,

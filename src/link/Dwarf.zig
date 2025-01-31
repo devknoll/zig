@@ -2755,6 +2755,7 @@ fn updateComptimeNavInner(dwarf: *Dwarf, pt: Zcu.PerThread, nav_index: InternPoo
         .error_set_type,
         .inferred_error_set_type,
         => .decl_alias,
+        .async_frame_type => @panic("TODO: Implement async_frame_type"),
         .struct_type => tag: {
             const loaded_struct = ip.loadStructType(nav_val.toIntern());
             if (loaded_struct.zir_index.resolveFile(ip) != inst_info.file) break :tag .decl_alias;
@@ -3321,6 +3322,7 @@ fn updateLazyType(
             try uleb128(diw, @intFromEnum(AbbrevCode.null));
         },
         .anyframe_type => unreachable,
+        .async_frame_type => unreachable,
         .error_union_type => |error_union_type| {
             const error_union_error_set_type: Type = .fromInterned(error_union_type.error_set_type);
             const error_union_payload_type: Type = .fromInterned(error_union_type.payload_type);
@@ -3682,6 +3684,7 @@ fn updateLazyValue(
         .error_set_type,
         .inferred_error_set_type,
         => unreachable, // already handled
+        .async_frame_type => @panic("TODO: Implement async_frame_type"),
         .undef => |ty| {
             try wip_nav.abbrevCode(.aggregate_comptime_value);
             try wip_nav.refType(.fromInterned(ty));

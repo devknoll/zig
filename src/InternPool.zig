@@ -1971,6 +1971,8 @@ pub const Key = union(enum) {
     /// `anyframe->T`. The payload is the child type, which may be `none` to indicate
     /// `anyframe`.
     anyframe_type: Index,
+    /// The payload is the function whose frame it refers to.
+    async_frame_type: Index,
     error_union_type: ErrorUnionType,
     simple_type: SimpleType,
     /// This represents a struct that has been explicitly declared in source code,
@@ -2618,6 +2620,7 @@ pub const Key = union(enum) {
             .enum_tag,
             .empty_enum_value,
             .inferred_error_set_type,
+            .async_frame_type,
             .un,
             => |x| Hash.hash(seed, asBytes(&x)),
 
@@ -2870,6 +2873,10 @@ pub const Key = union(enum) {
             .error_union_type => |a_info| {
                 const b_info = b.error_union_type;
                 return std.meta.eql(a_info, b_info);
+            },
+            .async_frame_type => |a_info| {
+                const b_info = b.async_frame_type;
+                return a_info == b_info;
             },
             .simple_type => |a_info| {
                 const b_info = b.simple_type;
@@ -3180,6 +3187,7 @@ pub const Key = union(enum) {
             .enum_type,
             .tuple_type,
             .func_type,
+            .async_frame_type,
             => .type_type,
 
             inline .ptr,
@@ -4772,6 +4780,7 @@ pub const Index = enum(u32) {
             trailing: struct { names: []NullTerminatedString },
         },
         type_inferred_error_set: DataIsIndex,
+        type_async_frame: DataIsIndex,
         type_enum_auto: struct {
             const @"data.fields_len" = opaque {};
             data: *EnumAuto,
@@ -5291,6 +5300,9 @@ pub const Tag = enum(u8) {
     /// A union type.
     /// `data` is extra index of `TypeUnion`.
     type_union,
+    /// The async frame type of a function.
+    /// data is Index of function.
+    type_async_frame,
     /// A function body type.
     /// `data` is extra index to `TypeFunction`.
     type_function,
@@ -5524,6 +5536,7 @@ pub const Tag = enum(u8) {
             .summary = .@"@typeInfo(@typeInfo(@TypeOf({.data%summary})).@\"fn\".return_type.?).error_union.error_set",
             .data = Index,
         },
+        .type_async_frame = .{ .summary = .@"@Frame({.data%summary})", .data = Index },
         .type_enum_auto = .{
             .summary = .@"{.payload.name%summary#\"}",
             .payload = EnumAuto,
@@ -6828,6 +6841,9 @@ pub fn indexToKey(ip: *const InternPool, index: Index) Key {
         .type_inferred_error_set => .{
             .inferred_error_set_type = @enumFromInt(data),
         },
+        .type_async_frame => .{
+            .async_frame_type = @enumFromInt(data),
+        },
 
         .type_opaque => .{ .opaque_type = ns: {
             const extra = extraDataTrail(unwrapped_index.getExtra(ip), Tag.TypeOpaque, data);
@@ -7739,6 +7755,12 @@ pub fn get(ip: *InternPool, gpa: Allocator, tid: Zcu.PerThread.Id, key: Key) All
             items.appendAssumeCapacity(.{
                 .tag = .type_inferred_error_set,
                 .data = @intFromEnum(ies_index),
+            });
+        },
+        .async_frame_type => |fn_index| {
+            items.appendAssumeCapacity(.{
+                .tag = .type_async_frame,
+                .data = @intFromEnum(fn_index),
             });
         },
         .simple_type => |simple_type| {
@@ -10887,6 +10909,7 @@ fn dumpStatsFallible(ip: *const InternPool, arena: Allocator) anyerror!void {
                     break :b @sizeOf(Tag.ErrorSet) + (@sizeOf(u32) * info.names_len);
                 },
                 .type_inferred_error_set => 0,
+                .type_async_frame => 0,
                 .type_enum_explicit, .type_enum_nonexhaustive => b: {
                     const info = extraData(extra_list, EnumExplicit, data);
                     var ints = @typeInfo(EnumExplicit).@"struct".fields.len;
@@ -11109,6 +11132,7 @@ fn dumpAllFallible(ip: *const InternPool) anyerror!void {
                 .type_anyerror_union,
                 .type_error_set,
                 .type_inferred_error_set,
+                .type_async_frame,
                 .type_enum_explicit,
                 .type_enum_nonexhaustive,
                 .type_enum_auto,
@@ -11820,6 +11844,7 @@ pub fn typeOf(ip: *const InternPool, index: Index) Index {
                 .type_anyerror_union,
                 .type_error_set,
                 .type_inferred_error_set,
+                .type_async_frame,
                 .type_enum_auto,
                 .type_enum_explicit,
                 .type_enum_nonexhaustive,
@@ -12193,6 +12218,7 @@ pub fn zigTypeTag(ip: *const InternPool, index: Index) std.builtin.TypeId {
             .type_union => .@"union",
 
             .type_function => .@"fn",
+            .type_async_frame => .frame,
 
             // values, not types
             .undef,
