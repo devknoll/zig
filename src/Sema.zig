@@ -7570,10 +7570,6 @@ fn analyzeCall(
     const ip = &zcu.intern_pool;
     const arena = sema.arena;
 
-    if (modifier == .async_kw) {
-        return sema.failWithUseOfAsync(block, call_src);
-    }
-
     const maybe_func_inst = try sema.funcDeclSrcInst(callee);
     const func_ret_ty_src: LazySrcLoc = if (maybe_func_inst) |fn_decl_inst| .{
         .base_node_inst = fn_decl_inst,
@@ -7963,23 +7959,41 @@ fn analyzeCall(
             .never_tail => .call_never_tail,
             .never_inline => .call_never_inline,
             .always_tail => .call_always_tail,
+            .async_kw => .call_async_alloc,
 
             .always_inline,
             .compile_time,
-            .async_kw,
             => unreachable,
         };
 
-        try sema.air_extra.ensureUnusedCapacity(gpa, @typeInfo(Air.Call).@"struct".fields.len + runtime_args.len);
-        const result = try block.addInst(.{
-            .tag = call_tag,
-            .data = .{ .pl_op = .{
-                .operand = runtime_func,
-                .payload = sema.addExtraAssumeCapacity(Air.Call{
-                    .args_len = @intCast(runtime_args.len),
-                }),
-            } },
-        });
+        const result = switch (call_tag) {
+            .call_async_alloc => blk: {
+                try sema.air_extra.ensureUnusedCapacity(gpa, @typeInfo(Air.AsyncCallAlloc).@"struct".fields.len + runtime_args.len);
+                const ptr_frame_ty = try pt.asyncFrameType(callee.toInterned().?);
+                break :blk try block.addInst(.{
+                    .tag = call_tag,
+                    .data = .{ .ty_pl = .{
+                        .ty = Air.internedToRef(ptr_frame_ty.toIntern()),
+                        .payload = sema.addExtraAssumeCapacity(Air.AsyncCallAlloc{
+                            .callee = callee,
+                            .args_len = @intCast(runtime_args.len),
+                        }),
+                    } },
+                });
+            },
+            else => blk: {
+                try sema.air_extra.ensureUnusedCapacity(gpa, @typeInfo(Air.Call).@"struct".fields.len + runtime_args.len);
+                break :blk try block.addInst(.{
+                    .tag = call_tag,
+                    .data = .{ .pl_op = .{
+                        .operand = runtime_func,
+                        .payload = sema.addExtraAssumeCapacity(Air.Call{
+                            .args_len = @intCast(runtime_args.len),
+                        }),
+                    } },
+                });
+            },
+        };
         sema.appendRefsAssumeCapacity(runtime_args);
 
         if (ensure_result_used) {

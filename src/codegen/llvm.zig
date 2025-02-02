@@ -5304,12 +5304,14 @@ pub const FuncGen = struct {
                     if (self.typeOfIndex(inst).isNoReturn(zcu)) return;
                     break :res res;
                 },
-                .call, .call_always_tail, .call_never_tail, .call_never_inline => |tag| res: {
+                .call, .call_always_tail, .call_never_tail, .call_never_inline, .call_async, .call_async_alloc => |tag| res: {
                     const res = try self.airCall(inst, switch (tag) {
                         .call              => .auto,
                         .call_always_tail  => .always_tail,
                         .call_never_tail   => .never_tail,
                         .call_never_inline => .never_inline,
+                        .call_async        => .async_kw,
+                        .call_async_alloc  => .async_kw,
                         else               => unreachable,
                     });
                     // TODO: the AIR we emit for calls is a bit weird - the instruction has
@@ -5426,6 +5428,7 @@ pub const FuncGen = struct {
     };
 
     fn airCall(self: *FuncGen, inst: Air.Inst.Index, modifier: std.builtin.CallModifier) !Builder.Value {
+        if (modifier == .async_kw) return self.todo("implement async calls for llvm", .{});
         const pl_op = self.air.instructions.items(.data)[@intFromEnum(inst)].pl_op;
         const extra = self.air.extraData(Air.Call, pl_op.payload);
         const args: []const Air.Inst.Ref = @ptrCast(self.air.extra[extra.end..][0..extra.data.args_len]);
