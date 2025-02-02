@@ -3417,6 +3417,10 @@ pub fn singleErrorSetType(pt: Zcu.PerThread, name: InternPool.NullTerminatedStri
     return Type.fromInterned(try pt.zcu.intern_pool.getErrorSetType(pt.zcu.gpa, pt.tid, names));
 }
 
+pub fn asyncFrameType(pt: Zcu.PerThread, func_index: InternPool.Index) Allocator.Error!Type {
+    return Type.fromInterned(try pt.intern(.{ .async_frame_type = func_index }));
+}
+
 /// Sorts `names` in place.
 pub fn errorSetFromUnsortedNames(
     pt: Zcu.PerThread,

@@ -3485,6 +3485,8 @@ fn genBodyInner(f: *Function, body: []const Air.Inst.Index) error{ AnalysisFail,
             .call_always_tail  => .none,
             .call_never_tail   => try airCall(f, inst, .never_tail),
             .call_never_inline => try airCall(f, inst, .never_inline),
+            .call_async        => try airCall(f, inst, .async_kw),
+            .call_async_alloc  => try airCall(f, inst, .async_kw),
 
             // zig fmt: on
         };
@@ -4516,6 +4518,8 @@ fn airCall(
     inst: Air.Inst.Index,
     modifier: std.builtin.CallModifier,
 ) !CValue {
+    if (modifier == .async_kw) return f.fail("TODO: C backend: implement async calls", .{});
+
     const pt = f.object.dg.pt;
     const zcu = pt.zcu;
     const ip = &zcu.intern_pool;

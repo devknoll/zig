@@ -397,9 +397,10 @@ pub fn print(ty: Type, writer: anytype, pt: Zcu.PerThread) @TypeOf(writer).Error
             return print(Type.fromInterned(child), writer, pt);
         },
         .async_frame_type => |fn_index| {
-            _ = fn_index;
-            // TODO
-            try writer.writeAll("@Frame()");
+            const func_nav = ip.getNav(zcu.funcInfo(fn_index).owner_nav);
+            try writer.print("@Frame({})", .{
+                func_nav.fqn.fmt(ip),
+            });
         },
 
         // values, not types
