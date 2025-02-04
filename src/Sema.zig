@@ -7969,7 +7969,7 @@ fn analyzeCall(
         const result = switch (call_tag) {
             .call_async_alloc => blk: {
                 try sema.air_extra.ensureUnusedCapacity(gpa, @typeInfo(Air.AsyncCallAlloc).@"struct".fields.len + runtime_args.len);
-                const ptr_frame_ty = try pt.asyncFrameType(callee.toInterned().?);
+                const ptr_frame_ty = try pt.singleMutPtrType(try pt.asyncFrameType(callee.toInterned().?));
                 break :blk try block.addInst(.{
                     .tag = call_tag,
                     .data = .{ .ty_pl = .{

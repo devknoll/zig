@@ -1545,8 +1545,18 @@ pub fn abiSizeInner(
             .enum_type => return .{ .scalar = Type.fromInterned(ip.loadEnumType(ty.toIntern()).tag_ty).abiSize(zcu) },
 
             .async_frame_type => {
-                // TODO
-                @panic("they asked for the size of an async frame");
+                switch (strat) {
+                    .sema, .eager => unreachable,
+                    .lazy => {
+                        const pt = strat.pt(zcu, tid);
+                        return .{
+                            .val = Value.fromInterned(try pt.intern(.{ .int = .{
+                                .ty = .comptime_int_type,
+                                .storage = .{ .lazy_size = ty.toIntern() },
+                            } })),
+                        };
+                    },
+                }
             },
 
             // values, not types
