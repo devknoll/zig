@@ -999,6 +999,7 @@ pub const Attribute = union(Kind) {
     shadowcallstack,
     mustprogress,
     vscale_range: VScaleRange,
+    presplitcoroutine,
 
     // Global Attributes
     no_sanitize_address,
@@ -1112,6 +1113,7 @@ pub const Attribute = union(Kind) {
                 .no_sanitize_address,
                 .no_sanitize_hwaddress,
                 .sanitize_address_dyninit,
+                .presplitcoroutine,
                 => |kind| {
                     const field = comptime blk: {
                         @setEvalBranchQuota(10_000);
@@ -1219,6 +1221,7 @@ pub const Attribute = union(Kind) {
                 .no_sanitize_address,
                 .no_sanitize_hwaddress,
                 .sanitize_address_dyninit,
+                .presplitcoroutine,
                 => try writer.print(" {s}", .{@tagName(attribute)}),
                 .byval,
                 .byref,
@@ -1407,6 +1410,7 @@ pub const Attribute = union(Kind) {
         shadowcallstack = 58,
         mustprogress = 70,
         vscale_range = 74,
+        presplitcoroutine = 83,
 
         // Global Attributes
         no_sanitize_address = 100,
@@ -2775,6 +2779,12 @@ pub const Intrinsic = enum {
     @"wasm.memory.size",
     @"wasm.memory.grow",
 
+    // Coroutine
+    @"coro.id.async",
+    @"coro.begin",
+    @"coro.async.resume",
+    @"coro.suspend.async",
+
     const Signature = struct {
         ret_len: u8,
         params: []const Parameter,
@@ -4011,6 +4021,43 @@ pub const Intrinsic = enum {
             },
             .attrs = &.{ .nocallback, .nofree, .nosync, .nounwind, .willreturn },
         },
+        .@"coro.id.async" = .{
+            .ret_len = 1,
+            .params = &.{
+                .{ .kind = .{ .type = .token } },
+                .{ .kind = .{ .type = .i32 } },
+                .{ .kind = .{ .type = .i32 } },
+                .{ .kind = .{ .type = .i32 } },
+                .{ .kind = .{ .type = .ptr } },
+            },
+            .attrs = &.{},
+        },
+        .@"coro.begin" = .{
+            .ret_len = 1,
+            .params = &.{
+                .{ .kind = .{ .type = .ptr } },
+                .{ .kind = .{ .type = .token } },
+                .{ .kind = .{ .type = .ptr } },
+            },
+            .attrs = &.{},
+        },
+        .@"coro.async.resume" = .{
+            .ret_len = 1,
+            .params = &.{
+                .{ .kind = .{ .type = .ptr } },
+            },
+            .attrs = &.{},
+        },
+        .@"coro.suspend.async" = .{
+            .ret_len = 1,
+            .params = &.{
+                .{ .kind = .overloaded },
+                .{ .kind = .{ .type = .i32 } },
+                .{ .kind = .{ .type = .ptr } },
+                .{ .kind = .{ .type = .ptr } },
+            },
+            .attrs = &.{},
+        },
     });
 };
 
@@ -4028,6 +4075,7 @@ pub const Function = struct {
     debug_locations: std.AutoHashMapUnmanaged(Instruction.Index, DebugLocation) = .empty,
     debug_values: []const Instruction.Index = &.{},
     extra: []const u32 = &.{},
+    prefix: Constant = .none,
 
     pub const Index = enum(u32) {
         none = std.math.maxInt(u32),
@@ -4091,6 +4139,10 @@ pub const Function = struct {
 
         pub fn setSubprogram(self: Index, subprogram: Metadata, builder: *Builder) void {
             self.ptrConst(builder).global.setDebugMetadata(subprogram, builder);
+        }
+
+        pub fn setPrefix(self: Index, prefix: Constant, builder: *Builder) void {
+            self.ptr(builder).prefix = prefix;
         }
     };
 
@@ -13429,6 +13481,7 @@ pub fn toBitcode(self: *Builder, allocator: Allocator) bitcode_writer.Error![]co
                             .no_sanitize_address,
                             .no_sanitize_hwaddress,
                             .sanitize_address_dyninit,
+                            .presplitcoroutine,
                             => {
                                 try record.ensureUnusedCapacity(self.gpa, 2);
                                 record.appendAssumeCapacity(0);
@@ -13693,6 +13746,11 @@ pub fn toBitcode(self: *Builder, allocator: Allocator) bitcode_writer.Error![]co
                 else
                     0;
 
+                const prefix = if (func.prefix == .none)
+                    0
+                else
+                    (constant_adapter.getConstantIndex(func.prefix) + 1);
+
                 const strtab = func.global.strtab(self);
 
                 const global = func.global.ptrConst(self);
@@ -13709,6 +13767,7 @@ pub fn toBitcode(self: *Builder, allocator: Allocator) bitcode_writer.Error![]co
                     .visibility = global.visibility,
                     .unnamed_addr = global.unnamed_addr,
                     .dllstorageclass = global.dll_storage_class,
+                    .prefix = prefix,
                     .preemption = global.preemption,
                     .addr_space = global.addr_space,
                 });

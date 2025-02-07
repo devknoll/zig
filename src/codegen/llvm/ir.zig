@@ -271,7 +271,7 @@ pub const Module = struct {
             .{ .literal = 0 }, // prologuedata
             .{ .fixed = @bitSizeOf(Builder.DllStorageClass) },
             .{ .literal = 0 }, // comdat
-            .{ .literal = 0 }, // prefixdata
+            ConstantAbbrev, // prefixdata
             .{ .literal = 0 }, // personalityfn
             .{ .fixed = @bitSizeOf(Builder.Preemption) },
             .{ .fixed = @bitSizeOf(Builder.AddrSpace) },
@@ -288,6 +288,7 @@ pub const Module = struct {
         visibility: Builder.Visibility,
         unnamed_addr: Builder.UnnamedAddr,
         dllstorageclass: Builder.DllStorageClass,
+        prefix: u32,
         preemption: Builder.Preemption,
         addr_space: Builder.AddrSpace,
     };
