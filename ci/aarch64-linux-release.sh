@@ -5,6 +5,7 @@
 set -x
 set -e
 
+ZIGDIR="$PWD"
 ARCH="$(uname -m)"
 TARGET="$ARCH-linux-musl"
 MCPU="baseline"
@@ -13,6 +14,14 @@ PREFIX="$HOME/deps/$CACHE_BASENAME"
 ZIG="$PREFIX/bin/zig"
 
 export PATH="$HOME/local/bin:$PATH"
+
+if [ ! -d "$PREFIX" ]; then
+  cd $HOME
+  curl -L -O "https://ziglang.org/deps/$CACHE_BASENAME.tar.xz"
+  tar xf "$CACHE_BASENAME.tar.xz"
+fi
+
+cd $ZIGDIR
 
 # Make the `zig version` number consistent.
 # This will affect the cmake command below.

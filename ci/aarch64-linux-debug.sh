@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# Requires cmake ninja-build
+# Requires cmake
 
 set -x
 set -e
@@ -8,45 +8,24 @@ set -e
 ARCH="$(uname -m)"
 TARGET="$ARCH-linux-musl"
 MCPU="baseline"
-CACHE_BASENAME="zig+llvm+lld+clang-$TARGET-0.14.0-dev.1622+2ac543388"
-PREFIX="$HOME/deps/$CACHE_BASENAME"
-ZIG="$PREFIX/bin/zig"
-
-export PATH="$HOME/local/bin:$PATH"
-
-# Make the `zig version` number consistent.
-# This will affect the cmake command below.
-git fetch --unshallow || true
-git fetch --tags
-
-# Override the cache directories because they won't actually help other CI runs
-# which will be testing alternate versions of zig, and ultimately would just
-# fill up space on the hard drive for no reason.
-export ZIG_GLOBAL_CACHE_DIR="$PWD/zig-global-cache"
-export ZIG_LOCAL_CACHE_DIR="$PWD/zig-local-cache"
+PREFIX="/usr/lib/llvm-19/"
 
 mkdir build-debug
 cd build-debug
 
-export CC="$ZIG cc -target $TARGET -mcpu=$MCPU"
-export CXX="$ZIG c++ -target $TARGET -mcpu=$MCPU"
+sudo apt-get install libllvm19 llvm-19-dev llvm-19 lld-19 liblld-19-dev libclang-19-dev libpolly-19-dev libc++-19-dev libc++abi-19-dev
+
+export LDFLAGS="$LDFLAGS -L/usr/lib/llvm-19/lib"
+export CPPFLAGS="$CPPFLAGS -I/usr/lib/llvm-19/include"
 
 cmake .. \
+  -DCMAKE_PREFIX_PATH="/usr/lib/llvm-19/lib/" \
   -DCMAKE_INSTALL_PREFIX="stage3-debug" \
-  -DCMAKE_PREFIX_PATH="$PREFIX" \
   -DCMAKE_BUILD_TYPE=Debug \
-  -DZIG_TARGET_TRIPLE="$TARGET" \
-  -DZIG_TARGET_MCPU="$MCPU" \
-  -DZIG_STATIC=ON \
-  -DZIG_NO_LIB=ON \
-  -GNinja
+  -DZIG_SHARED_LLVM=ON \
+  -DZIG_NO_LIB=ON
 
-# Now cmake will use zig as the C/C++ compiler. We reset the environment variables
-# so that installation and testing do not get affected by them.
-unset CC
-unset CXX
-
-ninja install
+make install
 
 # simultaneously test building self-hosted without LLVM and with 32-bit arm
 stage3-debug/bin/zig build \
