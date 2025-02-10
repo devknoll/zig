@@ -207,6 +207,8 @@ const Writer = struct {
             .save_err_return_trace_index,
             => try w.writeNoOp(s, inst),
 
+            .@"suspend" => try w.writeSuspend(s, inst),
+
             .alloc,
             .ret_ptr,
             .err_return_trace,
@@ -815,6 +817,29 @@ const Writer = struct {
         for (liveness_condbr.then_deaths) |operand| {
             try s.print(" {}!", .{operand});
         }
+    }
+
+    fn writeSuspend(w: *Writer, s: anytype, inst: Air.Inst.Index) @TypeOf(s).Error!void {
+        const pl_op = w.air.instructions.items(.data)[@intFromEnum(inst)].pl_op;
+        const extra = w.air.extraData(Air.Suspend, pl_op.payload);
+        const suspend_body: []const Air.Inst.Index = @ptrCast(w.air.extra[extra.end..][0..extra.data.body_len]);
+        const cancel_body: []const Air.Inst.Index = @ptrCast(w.air.extra[extra.end + suspend_body.len ..][0..extra.data.cancel_body_len]);
+
+        if (w.skip_body) return s.writeAll("..., ...");
+
+        try s.writeAll(" {\n");
+        const old_indent = w.indent;
+        w.indent += 2;
+
+        try w.writeBody(s, suspend_body);
+        try s.writeByteNTimes(' ', old_indent);
+        try s.writeAll("}, {\n");
+
+        try w.writeBody(s, cancel_body);
+        w.indent = old_indent;
+
+        try s.writeByteNTimes(' ', old_indent);
+        try s.writeAll("}");
     }
 
     fn writeCondBr(w: *Writer, s: anytype, inst: Air.Inst.Index) @TypeOf(s).Error!void {

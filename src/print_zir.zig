@@ -438,11 +438,12 @@ const Writer = struct {
 
             .block,
             .block_inline,
-            .suspend_block,
             .loop,
             .c_import,
             .typeof_builtin,
             => try self.writeBlock(stream, inst),
+
+            .suspend_block => try self.writeSuspend(stream, inst),
 
             .block_comptime => try self.writeBlockComptime(stream, inst),
 
@@ -1350,6 +1351,18 @@ const Writer = struct {
         const extra = self.code.extraData(Zir.Inst.Block, inst_data.payload_index);
         const body = self.code.bodySlice(extra.end, extra.data.body_len);
         try self.writeBracedBody(stream, body);
+        try stream.writeAll(") ");
+        try self.writeSrcNode(stream, inst_data.src_node);
+    }
+
+    fn writeSuspend(self: *Writer, stream: anytype, inst: Zir.Inst.Index) !void {
+        const inst_data = self.code.instructions.items(.data)[@intFromEnum(inst)].pl_node;
+        const extra = self.code.extraData(Zir.Inst.Suspend, inst_data.payload_index);
+        const suspend_body = self.code.bodySlice(extra.end, extra.data.body_len);
+        const cancel_body = self.code.bodySlice(extra.end + suspend_body.len, extra.data.cancel_body_len);
+        try self.writeBracedBody(stream, suspend_body);
+        try stream.writeAll(", ");
+        try self.writeBracedBody(stream, cancel_body);
         try stream.writeAll(") ");
         try self.writeSrcNode(stream, inst_data.src_node);
     }

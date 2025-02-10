@@ -3452,6 +3452,8 @@ fn genBodyInner(f: *Function, body: []const Air.Inst.Index) error{ AnalysisFail,
             .work_group_id,
             => unreachable,
 
+            .@"suspend" => return f.fail("TODO implement suspend", .{}),
+
             // Instructions that are known to always be `noreturn` based on their tag.
             .br              => return airBr(f, inst),
             .repeat          => return airRepeat(f, inst),

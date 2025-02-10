@@ -774,6 +774,24 @@ const DataLayoutBuilder = struct {
     }
 };
 
+/// Async scope
+pub const AsyncScope = struct {
+    /// Token of the coroutine.
+    token: Builder.Value,
+
+    /// Final block of the coroutine.
+    final_block: Builder.WipFunction.Block.Index,
+
+    /// Data for resuming.
+    resume_info: ?ResumeInfo,
+
+    pub const ResumeInfo = struct {
+        resume_block: Builder.WipFunction.Block.Index,
+        cancel_block: Builder.WipFunction.Block.Index,
+        save_token: Builder.Value,
+    };
+};
+
 pub const Object = struct {
     gpa: Allocator,
     builder: Builder,
@@ -1517,7 +1535,11 @@ pub const Object = struct {
         var args: std.ArrayListUnmanaged(Builder.Value) = .empty;
         defer args.deinit(gpa);
 
-        try attributes.addFnAttr(.presplitcoroutine, &o.builder);
+        const is_async = func.asyncStatusUnordered(ip) == .yes_async;
+
+        if (is_async) {
+            try attributes.addFnAttr(.presplitcoroutine, &o.builder);
+        }
 
         {
             var it = iterateParamTypes(o, fn_info);
@@ -1735,6 +1757,35 @@ pub const Object = struct {
             };
         };
 
+        const async_scope = switch (is_async) {
+            true => blk: {
+                const null_value = try o.builder.nullValue(.ptr);
+                const async_token = try wip.callIntrinsic(.normal, .none, .@"coro.id", &.{}, &.{
+                    try o.builder.intValue(.i32, 0),
+                    null_value,
+                    null_value,
+                    null_value,
+                }, "");
+                _ = try wip.callIntrinsic(.normal, .none, .@"coro.begin.custom.abi", &.{}, &.{ async_token, null_value, try o.builder.intValue(.i32, 0) }, "");
+
+                const prev_cursor = wip.cursor;
+                const final_block = try wip.block(0, "Final");
+
+                {
+                    wip.cursor = .{ .block = final_block };
+                    defer wip.cursor = prev_cursor;
+
+                    const coro_ptr = try wip.callIntrinsic(.normal, .none, .@"coro.frame", &.{}, &.{}, "");
+                    _ = try wip.callIntrinsic(.normal, .none, .@"coro.end", &.{}, &.{ coro_ptr, try o.builder.intValue(.i1, 0), try o.builder.noneValue(.token) }, "");
+                    _ = try wip.retVoid();
+                }
+
+                const async_scope = AsyncScope{ .token = async_token, .final_block = final_block, .resume_info = null };
+                break :blk async_scope;
+            },
+            false => null,
+        };
+
         var fg: FuncGen = .{
             .gpa = gpa,
             .air = air,
@@ -1758,35 +1809,10 @@ pub const Object = struct {
             .prev_dbg_line = 0,
             .prev_dbg_column = 0,
             .err_ret_trace = err_ret_trace,
+            .async_scope = async_scope,
         };
         defer fg.deinit();
         deinit_wip = false;
-
-        if (true) {
-            // const fl = try fg.lowerAsyncFrame();
-            // fl.ty.
-
-            const afp = try fg.lowerAsyncFuncPtr();
-            const afp_val = try o.builder.structConst(afp.ty, &.{
-                function_index.toConst(&o.builder),
-                try o.builder.intConst(.i32, 0),
-            });
-            const afp_variable = try o.builder.addVariable(
-                try o.builder.strtabString("__afp"),
-                afp.ty,
-                .default,
-            );
-            try afp_variable.setInitializer(afp_val, &o.builder);
-            function_index.setPrefix(afp_variable.toConst(&o.builder), &o.builder);
-
-            const byte_size = @divExact(target.ptrBitWidth(), 8);
-            const context_size = try o.builder.intValue(.i32, byte_size);
-            const context_align = try o.builder.intValue(.i32, 0);
-            const context_arg = try o.builder.intValue(.i32, 0);
-            const token = try fg.wip.callIntrinsic(.normal, .none, .@"coro.id.async", &.{}, &.{ context_size, context_align, context_arg, afp_variable.toValue(&o.builder) }, "");
-            // _ = token;
-            _ = try fg.wip.callIntrinsic(.normal, .none, .@"coro.begin", &.{}, &.{ token, try o.builder.nullValue(.ptr) }, "");
-        }
 
         fg.genBody(air.getMainBody(), .poi) catch |err| switch (err) {
             error.CodegenFail => {
@@ -2968,9 +2994,12 @@ pub const Object = struct {
         const gpa = o.gpa;
         const nav = ip.getNav(nav_index);
         const owner_mod = zcu.navFileScope(nav_index).mod;
-        const ty: Type = .fromInterned(nav.typeOf(ip));
+        const func = nav.typeOf(ip);
+        const ty: Type = .fromInterned(func);
         const gop = try o.nav_map.getOrPut(gpa, nav_index);
         if (gop.found_existing) return gop.value_ptr.ptr(&o.builder).kind.function;
+
+        // pt.ensureFuncBodyUpToDate(func) catch return Allocator.Error.OutOfMemory;
 
         const fn_info = zcu.typeToFunc(ty).?;
         const target = owner_mod.resolved_target.result;
@@ -3771,16 +3800,6 @@ pub const Object = struct {
         };
         return if (lower_elem_ty) try o.lowerType(elem_ty) else .i8;
     }
-
-    // fn lowerAsyncFrameHeader(o: *Object, ret_ty: Type) Allocator.Error!Builder.Type {
-    //     const l = asyncFrameLayout();
-    //     var fields: [4]Builder.Type = undefined;
-    //     fields[l.fn_ptr] = .ptr;
-    //     fields[l.resume_index] = try o.lowerType(Type.usize);
-    //     fields[l.awaiter] = .ptr;
-    //     fields[l.ret_val] = try o.lowerType(ret_ty);
-    //     return o.builder.structType(.normal, &fields);
-    // }
 
     fn lowerTypeFn(o: *Object, fn_info: InternPool.Key.FuncType) Allocator.Error!Builder.Type {
         const pt = o.pt;
@@ -4984,6 +5003,9 @@ pub const FuncGen = struct {
 
     sync_scope: Builder.SyncScope,
 
+    /// Async scope
+    async_scope: ?AsyncScope,
+
     const Fuzz = struct {
         counters_variable: Builder.Variable.Index,
         pcs: std.ArrayListUnmanaged(Builder.Constant),
@@ -5336,6 +5358,7 @@ pub const FuncGen = struct {
                 .work_item_id => try self.airWorkItemId(inst),
                 .work_group_size => try self.airWorkGroupSize(inst),
                 .work_group_id => try self.airWorkGroupId(inst),
+                .@"suspend"   => try self.airSuspend(inst),
 
                 // Instructions that are known to always be `noreturn` based on their tag.
                 .br              => return self.airBr(inst),
@@ -5486,9 +5509,6 @@ pub const FuncGen = struct {
     };
 
     fn airCallAsyncAlloc(self: *FuncGen, inst: Air.Inst.Index) !Builder.Value {
-        // _ = self;
-        // _ = inst;
-
         const ty_pl = self.air.instructions.items(.data)[@intFromEnum(inst)].ty_pl;
         const extra = self.air.extraData(Air.AsyncCallAlloc, ty_pl.payload);
         // const args: []const Air.Inst.Ref = @ptrCast(self.air.extra[extra.end..][0..extra.data.args_len]);
@@ -5519,8 +5539,6 @@ pub const FuncGen = struct {
         const afp_ptr = try self.wip.load(.normal, .ptr, afp_ptr_ptr, .default, "");
         const afp_size_ptr = try self.wip.gepStruct(afp.ty, afp_ptr, l.context_size, "");
 
-        // const afp_ptr = try self.wip.cast(.bitcast, callee, .ptr, "");
-        // const afp_size_ptr = try self.wip.gepStruct(afp.ty, afp_ptr, l.context_size, "");
         const address_space = llvmAllocaAddressSpace(target);
         const afp_size = try self.wip.load(.normal, afp.fields[l.context_size], afp_size_ptr, .default, "");
         const frame_alloca = try self.wip.alloca(.normal, .i8, afp_size, .default, address_space, "");
@@ -5891,6 +5909,10 @@ pub const FuncGen = struct {
     }
 
     fn airRet(self: *FuncGen, inst: Air.Inst.Index, safety: bool) !void {
+        if (try self.lowerAsyncRetPreamble() == true) {
+            return;
+        }
+
         const o = self.ng.object;
         const pt = o.pt;
         const zcu = pt.zcu;
@@ -7413,6 +7435,51 @@ pub const FuncGen = struct {
     fn airUnreach(self: *FuncGen, inst: Air.Inst.Index) !void {
         _ = inst;
         _ = try self.wip.@"unreachable"();
+    }
+
+    fn airSuspend(self: *FuncGen, inst: Air.Inst.Index) !Builder.Value {
+        const pl_op = self.air.instructions.items(.data)[@intFromEnum(inst)].pl_op;
+        const extra = self.air.extraData(Air.Suspend, pl_op.payload);
+        const suspend_body: []const Air.Inst.Index = @ptrCast(self.air.extra[extra.end..][0..extra.data.body_len]);
+        const cancel_body: []const Air.Inst.Index = @ptrCast(self.air.extra[extra.end + suspend_body.len ..][0..extra.data.cancel_body_len]);
+
+        const cancel_block = try self.wip.block(1, "CancelSuspend");
+        const resume_block = try self.wip.block(1, "ResumeSuspend");
+
+        const coro_ptr = try self.wip.callIntrinsic(.normal, .none, .@"coro.frame", &.{}, &.{}, "");
+        const save_token = try self.wip.callIntrinsic(.normal, .none, .@"coro.save", &.{}, &.{coro_ptr}, "");
+
+        self.async_scope.?.resume_info = AsyncScope.ResumeInfo{
+            .cancel_block = cancel_block,
+            .resume_block = resume_block,
+            .save_token = save_token,
+        };
+        try self.genBodyDebugScope(null, suspend_body, .none);
+        self.async_scope.?.resume_info = null;
+
+        self.wip.cursor = .{ .block = cancel_block };
+        try self.genBodyDebugScope(null, cancel_body, .none);
+
+        self.wip.cursor = .{ .block = resume_block };
+        return .none;
+    }
+
+    fn lowerAsyncRetPreamble(self: *FuncGen) !bool {
+        if (self.async_scope) |async_scope| {
+            const o = self.ng.object;
+            if (async_scope.resume_info) |resume_info| {
+                const result = try self.wip.callIntrinsic(.normal, .none, .@"coro.suspend", &.{}, &.{ resume_info.save_token, try o.builder.intValue(.i1, 0) }, "");
+                var wipSwitch = try self.wip.@"switch"(result, async_scope.final_block, 2, .none);
+                defer wipSwitch.finish(&self.wip);
+                try wipSwitch.addCase(try o.builder.intConst(.i8, 0), resume_info.resume_block, &self.wip);
+                try wipSwitch.addCase(try o.builder.intConst(.i8, 1), resume_info.cancel_block, &self.wip);
+            } else {
+                async_scope.final_block.ptr(&self.wip).incoming += 1;
+                _ = try self.wip.br(async_scope.final_block);
+            }
+            return true;
+        }
+        return false;
     }
 
     fn airDbgStmt(self: *FuncGen, inst: Air.Inst.Index) !Builder.Value {

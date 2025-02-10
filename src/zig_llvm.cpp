@@ -52,6 +52,8 @@
 #include <llvm/Target/TargetMachine.h>
 #include <llvm/Target/TargetOptions.h>
 #include <llvm/Target/CodeGenCWrappers.h>
+#include <llvm/Transforms/Coroutines/ABI.h>
+#include <llvm/Transforms/Coroutines/CoroSplit.h>
 #include <llvm/Transforms/IPO.h>
 #include <llvm/Transforms/IPO/AlwaysInliner.h>
 #include <llvm/Transforms/Instrumentation/ThreadSanitizer.h>
@@ -213,6 +215,32 @@ static SanitizerCoverageOptions getSanCovOptions(ZigLLVMCoverageOptions z) {
     return o;
 }
 
+namespace {
+class CustomSwitchABI : public coro::SwitchABI {
+public:
+    CustomSwitchABI(Function &F, coro::Shape &S)
+        : coro::SwitchABI(F, S, llvm::coro::isTriviallyMaterializable) {}
+
+    void splitCoroutine(Function &F, coro::Shape &Shape,
+                        SmallVectorImpl<Function *> &Clones,
+                        TargetTransformInfo &TTI) override {
+        // Call the base implementation.
+        coro::SwitchABI::splitCoroutine(F, Shape, Clones, TTI);
+
+        auto &Context = F.getContext();
+        auto ElemTy = Type::getInt32Ty(Context);
+        auto ArrTy = ArrayType::get(ElemTy, 2);
+
+        SmallVector<Constant *, 2> Args;
+        Args.push_back(ConstantInt::get(ElemTy, Shape.FrameSize));
+        Args.push_back(ConstantInt::get(ElemTy, Shape.FrameAlign.value()));
+
+        auto *ConstVal = ConstantArray::get(ArrTy, Args);
+        F.setPrefixData(ConstVal);
+    }
+};
+}
+
 ZIG_EXTERN_C bool ZigLLVMTargetMachineEmitToFile(LLVMTargetMachineRef targ_machine_ref, LLVMModuleRef module_ref,
     char **error_message, const ZigLLVMEmitOptions *options)
 {
@@ -331,6 +359,14 @@ ZIG_EXTERN_C bool ZigLLVMTargetMachineEmitToFile(LLVMTargetMachineRef targ_machi
             module_pm.addPass(VerifierPass());
         }
     });
+
+    CoroSplitPass::BaseABITy GenCustomABI = [](Function &F, coro::Shape &S) {
+        return std::make_unique<CustomSwitchABI>(F, S);
+    };
+    pass_builder.registerCGSCCOptimizerLateEPCallback(
+        [&](CGSCCPassManager &cgscc_pm, OptimizationLevel OL) {
+            cgscc_pm.addPass(CoroSplitPass({GenCustomABI}));
+        });
 
     ModulePassManager module_pm;
     OptimizationLevel opt_level;
