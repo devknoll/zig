@@ -339,6 +339,9 @@ pub fn categorizeOperand(
         .work_group_id,
         => return .none,
 
+        .@"suspend",
+        => return .write,
+
         .not,
         .bitcast,
         .load,
@@ -1001,6 +1004,7 @@ fn analyzeInst(
         .work_item_id,
         .work_group_size,
         .work_group_id,
+        .@"suspend",
         => return analyzeOperands(a, pass, data, inst, .{ .none, .none, .none }),
 
         .inferred_alloc, .inferred_alloc_comptime => unreachable,

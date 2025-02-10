@@ -872,6 +872,11 @@ pub const Inst = struct {
         /// Operand is unused and set to Ref.none
         work_group_id,
 
+        /// Implements the suspend block.
+        /// Uses the `pl_op` field, payload is `Suspend`.
+        /// Operand is unused and set to Ref.none
+        @"suspend",
+
         pub fn fromCmpOp(op: std.math.CompareOperator, optimized: bool) Tag {
             switch (op) {
                 .lt => return if (optimized) .cmp_lt_optimized else .cmp_lt,
@@ -1166,6 +1171,14 @@ pub const Inst = struct {
 /// Trailing is a list of instruction indexes for every `body_len`.
 pub const Block = struct {
     body_len: u32,
+};
+
+/// This data is stored inside extra, with two sets of trailing `Inst.Ref`:
+/// * 0. the then body, according to `body_len`.
+/// * 1. the cancel body, according to `cancel_body_len`.
+pub const Suspend = struct {
+    body_len: u32,
+    cancel_body_len: u32,
 };
 
 /// Trailing is a list of instruction indexes for every `body_len`.
@@ -1556,6 +1569,7 @@ pub fn typeOfIndex(air: *const Air, inst: Air.Inst.Index, ip: *const InternPool)
         .vector_store_elem,
         .c_va_end,
         .call_async,
+        .@"suspend",
         => return Type.void,
 
         .slice_len,
@@ -1735,6 +1749,7 @@ pub fn mustLower(air: Air, inst: Air.Inst.Index, ip: *const InternPool) bool {
         .sub_safe,
         .mul_safe,
         .intcast_safe,
+        .@"suspend",
         => true,
 
         .add,

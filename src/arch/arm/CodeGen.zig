@@ -878,6 +878,8 @@ fn genBody(self: *Self, body: []const Air.Inst.Index) InnerError!void {
             .work_item_id => unreachable,
             .work_group_size => unreachable,
             .work_group_id => unreachable,
+
+            .@"suspend" => return self.fail("TODO implement suspend", .{}),
             // zig fmt: on
         }
 

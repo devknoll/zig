@@ -2784,6 +2784,12 @@ pub const Intrinsic = enum {
     @"coro.begin",
     @"coro.async.resume",
     @"coro.suspend.async",
+    @"coro.id",
+    @"coro.frame",
+    @"coro.save",
+    @"coro.suspend",
+    @"coro.begin.custom.abi",
+    @"coro.end",
 
     const Signature = struct {
         ret_len: u8,
@@ -4055,6 +4061,61 @@ pub const Intrinsic = enum {
                 .{ .kind = .{ .type = .i32 } },
                 .{ .kind = .{ .type = .ptr } },
                 .{ .kind = .{ .type = .ptr } },
+            },
+            .attrs = &.{},
+        },
+        .@"coro.id" = .{
+            .ret_len = 1,
+            .params = &.{
+                .{ .kind = .{ .type = .token } },
+                .{ .kind = .{ .type = .i32 } },
+                .{ .kind = .{ .type = .ptr } },
+                .{ .kind = .{ .type = .ptr } },
+                .{ .kind = .{ .type = .ptr } },
+            },
+            .attrs = &.{},
+        },
+        .@"coro.save" = .{
+            .ret_len = 1,
+            .params = &.{
+                .{ .kind = .{ .type = .token } },
+                .{ .kind = .{ .type = .ptr } },
+            },
+            .attrs = &.{},
+        },
+        .@"coro.frame" = .{
+            .ret_len = 1,
+            .params = &.{
+                .{ .kind = .{ .type = .ptr } },
+            },
+            .attrs = &.{},
+        },
+        .@"coro.suspend" = .{
+            .ret_len = 1,
+            .params = &.{
+                .{ .kind = .{ .type = .i8 } },
+                .{ .kind = .{ .type = .token } },
+                .{ .kind = .{ .type = .i1 } },
+            },
+            .attrs = &.{},
+        },
+        .@"coro.begin.custom.abi" = .{
+            .ret_len = 1,
+            .params = &.{
+                .{ .kind = .{ .type = .ptr } },
+                .{ .kind = .{ .type = .token } },
+                .{ .kind = .{ .type = .ptr } },
+                .{ .kind = .{ .type = .i32 } },
+            },
+            .attrs = &.{},
+        },
+        .@"coro.end" = .{
+            .ret_len = 1,
+            .params = &.{
+                .{ .kind = .{ .type = .i1 } },
+                .{ .kind = .{ .type = .ptr } },
+                .{ .kind = .{ .type = .i1 } },
+                .{ .kind = .{ .type = .token } },
             },
             .attrs = &.{},
         },

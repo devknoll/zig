@@ -1766,26 +1766,37 @@ pub const Object = struct {
             // const fl = try fg.lowerAsyncFrame();
             // fl.ty.
 
-            const afp = try fg.lowerAsyncFuncPtr();
-            const afp_val = try o.builder.structConst(afp.ty, &.{
-                function_index.toConst(&o.builder),
-                try o.builder.intConst(.i32, 0),
-            });
-            const afp_variable = try o.builder.addVariable(
-                try o.builder.strtabString("__afp"),
-                afp.ty,
-                .default,
-            );
-            try afp_variable.setInitializer(afp_val, &o.builder);
-            function_index.setPrefix(afp_variable.toConst(&o.builder), &o.builder);
+            // const afp = try fg.lowerAsyncFuncPtr();
+            // const afp_val = try o.builder.structConst(afp.ty, &.{
+            //     function_index.toConst(&o.builder),
+            //     try o.builder.intConst(.i32, 0),
+            // });
+            // const afp_variable = try o.builder.addVariable(
+            //     try o.builder.strtabStringFmt("__afp_{s}", .{nav.name.toSlice(ip)}),
+            //     afp.ty,
+            //     .default,
+            // );
+            // try afp_variable.setInitializer(afp_val, &o.builder);
+            // function_index.setPrefix(afp_variable.toConst(&o.builder), &o.builder);
 
-            const byte_size = @divExact(target.ptrBitWidth(), 8);
-            const context_size = try o.builder.intValue(.i32, byte_size);
-            const context_align = try o.builder.intValue(.i32, 0);
-            const context_arg = try o.builder.intValue(.i32, 0);
-            const token = try fg.wip.callIntrinsic(.normal, .none, .@"coro.id.async", &.{}, &.{ context_size, context_align, context_arg, afp_variable.toValue(&o.builder) }, "");
-            // _ = token;
-            _ = try fg.wip.callIntrinsic(.normal, .none, .@"coro.begin", &.{}, &.{ token, try o.builder.nullValue(.ptr) }, "");
+            // const byte_size = @divExact(target.ptrBitWidth(), 8);
+            // const context_size = try o.builder.intValue(.i32, byte_size);
+            // const context_align = try o.builder.intValue(.i32, 0);
+            // const context_arg = try o.builder.intValue(.i32, 0);
+            // const token = try fg.wip.callIntrinsic(.normal, .none, .@"coro.id.async", &.{}, &.{ context_size, context_align, context_arg, afp_variable.toValue(&o.builder) }, "");
+            // // _ = token;
+            // _ = try fg.wip.callIntrinsic(.normal, .none, .@"coro.begin", &.{}, &.{ token, try o.builder.nullValue(.ptr) }, "");
+
+            const null_value = try o.builder.nullValue(.ptr);
+            const token = try fg.wip.callIntrinsic(.normal, .none, .@"coro.id", &.{}, &.{
+                try o.builder.intValue(.i32, 0),
+                null_value,
+                null_value,
+                null_value,
+            }, "");
+            // _ = try fg.wip.callIntrinsic(.normal, .none, .@"coro.begin.custom.abi", &.{}, &.{ token, null_value, try o.builder.intValue(.i32, 0) }, "");
+            _ = try fg.wip.callIntrinsic(.normal, .none, .@"coro.begin", &.{}, &.{ token, null_value }, "");
+            // _ = try fg.wip.callIntrinsic(.normal, .none, .@"coro.suspend", &.{}, &.{ try o.builder.noneValue(.token), try o.builder.intValue(.i1, 0) }, "");
         }
 
         fg.genBody(air.getMainBody(), .poi) catch |err| switch (err) {
@@ -5336,6 +5347,7 @@ pub const FuncGen = struct {
                 .work_item_id => try self.airWorkItemId(inst),
                 .work_group_size => try self.airWorkGroupSize(inst),
                 .work_group_id => try self.airWorkGroupId(inst),
+                .@"suspend"   => try self.airSuspend(inst),
 
                 // Instructions that are known to always be `noreturn` based on their tag.
                 .br              => return self.airBr(inst),
@@ -7414,6 +7426,67 @@ pub const FuncGen = struct {
         _ = inst;
         _ = try self.wip.@"unreachable"();
     }
+
+    fn airSuspend(self: *FuncGen, inst: Air.Inst.Index) !Builder.Value {
+        const o = self.ng.object;
+        const pl_op = self.air.instructions.items(.data)[@intFromEnum(inst)].pl_op;
+        const extra = self.air.extraData(Air.Suspend, pl_op.payload);
+        const suspend_body: []const Air.Inst.Index = @ptrCast(self.air.extra[extra.end..][0..extra.data.body_len]);
+        const cancel_body: []const Air.Inst.Index = @ptrCast(self.air.extra[extra.end + suspend_body.len ..][0..extra.data.cancel_body_len]);
+
+        const bad_block = try self.wip.block(1, "BadResume");
+        const cancel_block = try self.wip.block(1, "Cancel");
+        const resume_block = try self.wip.block(1, "ResumeSuspend");
+
+        const coro_ptr = try self.wip.callIntrinsic(.normal, .none, .@"coro.frame", &.{}, &.{}, "");
+        const suspend_token = try self.wip.callIntrinsic(.normal, .none, .@"coro.save", &.{}, &.{coro_ptr}, "");
+        try self.genBodyDebugScope(null, suspend_body, .none);
+
+        const result = try self.wip.callIntrinsic(.normal, .none, .@"coro.suspend", &.{}, &.{ suspend_token, try o.builder.intValue(.i1, 0) }, "");
+        var wipSwitch = try self.wip.@"switch"(result, bad_block, 2, .none);
+        defer wipSwitch.finish(&self.wip);
+
+        try wipSwitch.addCase(try o.builder.intConst(.i8, 0), resume_block, &self.wip);
+        try wipSwitch.addCase(try o.builder.intConst(.i8, 1), cancel_block, &self.wip);
+
+        self.wip.cursor = .{ .block = bad_block };
+        _ = try self.wip.@"unreachable"();
+
+        self.wip.cursor = .{ .block = cancel_block };
+        try self.genBodyDebugScope(null, cancel_body, .none);
+
+        self.wip.cursor = .{ .block = resume_block };
+        return .none;
+    }
+
+    // fn airSuspendEnd(self: *FuncGen, inst: Air.Inst.Index) !Builder.Value {
+    //     _ = inst;
+    //     const o = self.ng.object;
+    //     const result = try self.wip.callIntrinsic(.normal, .none, .@"coro.suspend", &.{}, &.{ self.suspend_token, try o.builder.intValue(.i1, 0) }, "");
+    //     self.suspend_token = .none;
+
+    //     const bad_block = try self.wip.block(1, "BadResume");
+    //     const cleanup_block = try self.wip.block(1, "Cleanup");
+    //     const resume_block = try self.wip.block(1, "ResumeSuspend");
+
+    //     var wipSwitch = try self.wip.@"switch"(result, bad_block, 2, .none);
+    //     defer wipSwitch.finish(&self.wip);
+
+    //     try wipSwitch.addCase(try o.builder.intConst(.i8, 0), resume_block, &self.wip);
+    //     try wipSwitch.addCase(try o.builder.intConst(.i8, 1), cleanup_block, &self.wip);
+
+    //     self.wip.cursor = .{ .block = bad_block };
+    //     // try self.buildSimplePanic(.reached_unreachable);
+    //     _ = try self.wip.@"unreachable"();
+
+    //     self.wip.cursor = .{ .block = cleanup_block };
+    //     _ = try self.wip.@"unreachable"();
+
+    //     self.wip.cursor = .{ .block = resume_block };
+    //     // try fg.genBodyDebugScope(null, body, .poi);
+
+    //     return .none;
+    // }
 
     fn airDbgStmt(self: *FuncGen, inst: Air.Inst.Index) !Builder.Value {
         const dbg_stmt = self.air.instructions.items(.data)[@intFromEnum(inst)].dbg_stmt;

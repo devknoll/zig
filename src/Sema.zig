@@ -104,6 +104,9 @@ allow_memoize: bool = true,
 /// This state is on `Sema` so that `cold` hints can be propagated up through blocks with less special handling.
 branch_hint: ?std.builtin.BranchHint = null,
 
+/// Whether the function is determined to be async.
+is_async: bool = false,
+
 const RuntimeIndex = enum(u32) {
     zero = 0,
     comptime_field_ptr = std.math.maxInt(u32),
@@ -6162,9 +6165,40 @@ fn zirCImport(sema: *Sema, parent_block: *Block, inst: Zir.Inst.Index) CompileEr
 }
 
 fn zirSuspendBlock(sema: *Sema, parent_block: *Block, inst: Zir.Inst.Index) CompileError!Air.Inst.Ref {
-    const inst_data = sema.code.instructions.items(.data)[@intFromEnum(inst)].pl_node;
-    const src = parent_block.nodeOffset(inst_data.src_node);
-    return sema.failWithUseOfAsync(parent_block, src);
+    const pl_node = sema.code.instructions.items(.data)[@intFromEnum(inst)].pl_node;
+    const extra = sema.code.extraData(Zir.Inst.Suspend, pl_node.payload_index);
+
+    const body = sema.code.bodySlice(extra.end, extra.data.body_len);
+    const cancel_body = sema.code.bodySlice(extra.end + body.len, extra.data.cancel_body_len);
+
+    sema.is_async = true;
+
+    var body_block = parent_block.makeSubBlock();
+    defer body_block.instructions.deinit(sema.gpa);
+
+    var cancel_body_block = parent_block.makeSubBlock();
+    defer cancel_body_block.instructions.deinit(sema.gpa);
+
+    _ = try sema.resolveInlineBody(&body_block, body, inst);
+    _ = try sema.resolveInlineBody(&cancel_body_block, cancel_body, inst);
+
+    try sema.air_extra.ensureUnusedCapacity(sema.gpa, @typeInfo(Air.Suspend).@"struct".fields.len +
+        body_block.instructions.items.len + cancel_body_block.instructions.items.len);
+    const suspend_inst = try parent_block.addInst(.{
+        .tag = .@"suspend",
+        .data = .{ .pl_op = .{
+            .operand = .none,
+            .payload = sema.addExtraAssumeCapacity(Air.Suspend{
+                .body_len = @intCast(body_block.instructions.items.len),
+                .cancel_body_len = @intCast(body_block.instructions.items.len),
+            }),
+        } },
+    });
+
+    sema.air_extra.appendSliceAssumeCapacity(@ptrCast(body_block.instructions.items));
+    sema.air_extra.appendSliceAssumeCapacity(@ptrCast(cancel_body_block.instructions.items));
+
+    return suspend_inst;
 }
 
 fn zirBlock(sema: *Sema, parent_block: *Block, inst: Zir.Inst.Index) CompileError!Air.Inst.Ref {
@@ -7968,6 +8002,7 @@ fn analyzeCall(
 
         const result = switch (call_tag) {
             .call_async_alloc => blk: {
+                sema.is_async = true;
                 try sema.air_extra.ensureUnusedCapacity(gpa, @typeInfo(Air.AsyncCallAlloc).@"struct".fields.len + runtime_args.len);
                 const ptr_frame_ty = try pt.singleMutPtrType(try pt.asyncFrameType(callee.toInterned().?));
                 break :blk try block.addInst(.{

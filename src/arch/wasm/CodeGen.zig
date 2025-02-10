@@ -2091,6 +2091,8 @@ fn genInst(cg: *CodeGen, inst: Air.Inst.Index) InnerError!void {
         .work_group_size,
         .work_group_id,
         => unreachable,
+
+        .@"suspend" => return cg.fail("TODO implement suspend", .{}),
     };
 }
 

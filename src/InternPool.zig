@@ -2290,6 +2290,10 @@ pub const Key = union(enum) {
         /// is redundant with `comptime_bits` stored elsewhere.
         comptime_args: Index.Slice,
 
+        /// Index into extra array of the `async_status` corresponding to this function.
+        /// Used for mutating that data.
+        async_status_extra_index: u32,
+
         /// Returns a pointer that becomes invalid after any additions to the `InternPool`.
         fn analysisPtr(func: Func, ip: *const InternPool) *FuncAnalysis {
             const extra = ip.getLocalShared(func.tid).extra.acquire();
@@ -2349,6 +2353,24 @@ pub const Key = union(enum) {
 
             const branch_quota_ptr = func.branchQuotaPtr(ip);
             @atomicStore(u32, branch_quota_ptr, @max(branch_quota_ptr.*, new_branch_quota), .release);
+        }
+
+        /// Returns a pointer that becomes invalid after any additions to the `InternPool`.
+        fn asyncStatusPtr(func: Func, ip: *const InternPool) *AsyncStatus {
+            const extra = ip.getLocalShared(func.tid).extra.acquire();
+            return @ptrCast(&extra.view().items(.@"0")[func.async_status_extra_index]);
+        }
+
+        pub fn asyncStatusUnordered(func: Func, ip: *const InternPool) AsyncStatus {
+            return @atomicLoad(AsyncStatus, func.asyncStatusPtr(ip), .unordered);
+        }
+
+        pub fn setAsyncStatus(func: Func, ip: *InternPool, status: AsyncStatus) void {
+            const extra_mutex = &ip.getLocal(func.tid).mutate.extra.mutex;
+            extra_mutex.lock();
+            defer extra_mutex.unlock();
+
+            @atomicStore(AsyncStatus, func.asyncStatusPtr(ip), status, .release);
         }
 
         /// Returns a pointer that becomes invalid after any additions to the `InternPool`.
@@ -5866,6 +5888,7 @@ pub const Tag = enum(u8) {
         branch_quota: u32,
         /// Points to a `FuncDecl`.
         generic_owner: Index,
+        async_status: AsyncStatus,
     };
 
     pub const FuncCoerced = struct {
@@ -6061,6 +6084,21 @@ pub const FuncAnalysis = packed struct(u32) {
 
     _: u24 = 0,
 };
+
+/// AsyncStatus
+pub const AsyncStatus = enum(u32) {
+    unknown,
+    yes_async,
+    not_async,
+};
+
+fn initAsyncStatus(cc: std.builtin.CallingConvention) AsyncStatus {
+    return switch (cc) {
+        .auto => .unknown,
+        .@"async" => .yes_async,
+        else => .not_async,
+    };
+}
 
 pub const Bytes = struct {
     /// The type of the aggregate
@@ -7364,6 +7402,7 @@ fn extraFuncDecl(tid: Zcu.PerThread.Id, extra: Local.Extra, extra_index: u32) Ke
         .rbrace_column = func_decl.data.rbrace_column,
         .generic_owner = .none,
         .comptime_args = Index.Slice.empty,
+        .async_status_extra_index = 0,
     };
 }
 
@@ -7396,6 +7435,7 @@ fn extraFuncInstance(ip: *const InternPool, tid: Zcu.PerThread.Id, extra: Local.
             .start = end_extra_index + @intFromBool(analysis.inferred_error_set),
             .len = ip.funcTypeParamsLen(func_decl.ty),
         },
+        .async_status_extra_index = extra_index + std.meta.fieldIndex(Tag.FuncInstance, "async_status").?,
     };
 }
 
@@ -9411,6 +9451,7 @@ pub fn getFuncInstance(
         .ty = func_ty,
         .branch_quota = 0,
         .generic_owner = generic_owner,
+        .async_status = initAsyncStatus(generic_owner_ty.cc),
     });
     extra.appendSliceAssumeCapacity(.{@ptrCast(arg.comptime_args)});
 
@@ -9509,6 +9550,7 @@ pub fn getFuncInstanceIes(
         .ty = func_ty,
         .branch_quota = 0,
         .generic_owner = generic_owner,
+        .async_status = initAsyncStatus(generic_owner_ty.cc),
     });
     extra.appendAssumeCapacity(.{@intFromEnum(Index.none)}); // resolved error set
     extra.appendSliceAssumeCapacity(.{@ptrCast(arg.comptime_args)});
@@ -10196,6 +10238,7 @@ fn addExtraAssumeCapacity(extra: Local.Extra.Mutable, item: anytype) u32 {
             TrackedInst.Index,
             TrackedInst.Index.Optional,
             ComptimeAllocIndex,
+            AsyncStatus,
             => @intFromEnum(@field(item, field.name)),
 
             u32,
@@ -10258,6 +10301,7 @@ fn extraDataTrail(extra: Local.Extra, comptime T: type, index: u32) struct { dat
             TrackedInst.Index,
             TrackedInst.Index.Optional,
             ComptimeAllocIndex,
+            AsyncStatus,
             => @enumFromInt(extra_item),
 
             u32,

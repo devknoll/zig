@@ -29302,6 +29302,8 @@ fn genBody(cg: *CodeGen, body: []const Air.Inst.Index) InnerError!void {
             .work_item_id => unreachable,
             .work_group_size => unreachable,
             .work_group_id => unreachable,
+
+            .@"suspend" => return cg.fail("TODO implement suspend", .{}),
         }
         try cg.resetTemps();
         cg.checkInvariantsAfterAirInst();
