@@ -66,6 +66,7 @@ fn verifyBody(self: *Verify, body: []const Air.Inst.Index) Error!void {
             .work_item_id,
             .work_group_size,
             .work_group_id,
+            .@"suspend",
             => try self.verifyInstOperands(inst, .{ .none, .none, .none }),
 
             .trap, .unreach => {
@@ -350,6 +351,36 @@ fn verifyBody(self: *Verify, body: []const Air.Inst.Index) Error!void {
 
                 var bt = self.liveness.iterateBigTomb(inst);
                 try self.verifyOperand(inst, pl_op.operand, bt.feed());
+                for (args) |arg| {
+                    try self.verifyOperand(inst, arg, bt.feed());
+                }
+                try self.verifyInst(inst);
+            },
+            .call_async => {
+                const pl_op = data[@intFromEnum(inst)].pl_op;
+                const extra = self.air.extraData(Air.AsyncCall, pl_op.payload);
+                const args = @as(
+                    []const Air.Inst.Ref,
+                    @ptrCast(self.air.extra[extra.end..][0..extra.data.args_len]),
+                );
+
+                var bt = self.liveness.iterateBigTomb(inst);
+                try self.verifyOperand(inst, extra.data.frame_ptr, bt.feed());
+                try self.verifyOperand(inst, pl_op.operand, bt.feed());
+                for (args) |arg| {
+                    try self.verifyOperand(inst, arg, bt.feed());
+                }
+                try self.verifyInst(inst);
+            },
+            .call_async_alloc => {
+                const ty_pl = data[@intFromEnum(inst)].ty_pl;
+                const extra = self.air.extraData(Air.AsyncCallAlloc, ty_pl.payload);
+                const args = @as(
+                    []const Air.Inst.Ref,
+                    @ptrCast(self.air.extra[extra.end..][0..extra.data.args_len]),
+                );
+                var bt = self.liveness.iterateBigTomb(inst);
+                try self.verifyOperand(inst, extra.data.callee, bt.feed());
                 for (args) |arg| {
                     try self.verifyOperand(inst, arg, bt.feed());
                 }

@@ -1,13 +1,14 @@
 name: ci
 on:
   pull_request:
+    types: [opened, synchronize]
   push:
     branches:
       - master
-      - llvm19
+      - llvm20
 concurrency:
   # Cancels pending runs when a PR gets updated.
-  group: ${{ github.head_ref || github.run_id }}-${{ github.actor }}
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}-${{ github.actor }}
   cancel-in-progress: true
 permissions:
   # Sets permission policy for `GITHUB_TOKEN`
@@ -15,7 +16,7 @@ permissions:
 jobs:
   x86_64-linux-debug:
     timeout-minutes: 420
-    runs-on: [self-hosted, Linux, x86_64]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,7 +24,7 @@ jobs:
         run: sh ci/x86_64-linux-debug.sh
   x86_64-linux-release:
     timeout-minutes: 420
-    runs-on: [self-hosted, Linux, x86_64]
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -31,7 +32,7 @@ jobs:
         run: sh ci/x86_64-linux-release.sh
   aarch64-linux-debug:
     timeout-minutes: 480
-    runs-on: [self-hosted, Linux, aarch64]
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -39,7 +40,7 @@ jobs:
         run: sh ci/aarch64-linux-debug.sh
   aarch64-linux-release:
     timeout-minutes: 480
-    runs-on: [self-hosted, Linux, aarch64]
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -55,7 +56,7 @@ jobs:
       - name: Build and Test
         run: ci/x86_64-macos-release.sh
   aarch64-macos-debug:
-    runs-on: [self-hosted, macOS, aarch64]
+    runs-on: macos-latest
     env:
       ARCH: "aarch64"
     steps:
@@ -64,7 +65,7 @@ jobs:
       - name: Build and Test
         run: ci/aarch64-macos-debug.sh
   aarch64-macos-release:
-    runs-on: [self-hosted, macOS, aarch64]
+    runs-on: macos-latest
     env:
       ARCH: "aarch64"
     steps:
@@ -73,7 +74,7 @@ jobs:
       - name: Build and Test
         run: ci/aarch64-macos-release.sh
   x86_64-windows-debug:
-    runs-on: [self-hosted, Windows, x86_64]
+    runs-on: windows-latest
     env:
       ARCH: "x86_64"
     steps:
@@ -82,7 +83,7 @@ jobs:
       - name: Build and Test
         run: ci/x86_64-windows-debug.ps1
   x86_64-windows-release:
-    runs-on: [self-hosted, Windows, x86_64]
+    runs-on: windows-latest
     env:
       ARCH: "x86_64"
     steps:

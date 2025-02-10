@@ -309,7 +309,7 @@ pub const Inst = struct {
         /// Uses the `declaration` union field. Payload is `Declaration`.
         declaration,
         /// Implements `suspend {...}`.
-        /// Uses the `pl_node` union field. Payload is `Block`.
+        /// Uses the `pl_node` union field. Payload is `Suspend`.
         suspend_block,
         /// Boolean NOT. See also `bit_not`.
         /// Uses the `un_node` field.
@@ -2583,6 +2583,14 @@ pub const Inst = struct {
     /// Each operand is an `Index`.
     pub const Block = struct {
         body_len: u32,
+    };
+
+    /// This data is stored inside extra, with two sets of trailing `Ref`:
+    /// * 0. the then body, according to `body_len`.
+    /// * 1. the else body, according to `cancel_body_len`.
+    pub const Suspend = struct {
+        body_len: u32,
+        cancel_body_len: u32,
     };
 
     /// Trailing:

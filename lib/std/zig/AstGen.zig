@@ -1207,6 +1207,10 @@ fn suspendExpr(
     const node_datas = tree.nodes.items(.data);
     const body_node = node_datas[node].lhs;
 
+    const fn_block = astgen.fn_block orelse {
+        return astgen.failNode(node, "cannot suspend outside function scope", .{});
+    };
+
     if (gz.nosuspend_node != 0) {
         return astgen.failNodeNotes(node, "suspend inside nosuspend block", .{}, &[_]u32{
             try astgen.errNoteNode(gz.nosuspend_node, "nosuspend block here", .{}),
@@ -1230,9 +1234,44 @@ fn suspendExpr(
     if (!gz.refIsNoReturn(body_result)) {
         _ = try suspend_scope.addBreak(.break_inline, suspend_inst, .void_value);
     }
-    try suspend_scope.setBlockBody(suspend_inst);
+
+    var cancel_scope = gz.makeSubBlock(scope);
+    defer cancel_scope.unstack();
+
+    try genDefers(&cancel_scope, &fn_block.base, scope, .both_sans_err);
+    _ = try cancel_scope.addBreak(.break_inline, suspend_inst, .void_value);
+
+    try setSuspendPayload(suspend_inst, &suspend_scope, &cancel_scope);
 
     return suspend_inst.toRef();
+}
+
+/// Supports `cancel_scope` stacked on `suspend_scope`. Unstacks `cancel_scope` then `suspend_scope`.
+fn setSuspendPayload(
+    suspend_inst: Zir.Inst.Index,
+    suspend_scope: *GenZir,
+    cancel_scope: *GenZir,
+) !void {
+    defer suspend_scope.unstack();
+    defer cancel_scope.unstack();
+    const astgen = suspend_scope.astgen;
+    const suspend_body = suspend_scope.instructionsSliceUpto(cancel_scope);
+    const cancel_body = cancel_scope.instructionsSlice();
+    const suspend_body_len = astgen.countBodyLenAfterFixups(suspend_body);
+    const cancel_body_len = astgen.countBodyLenAfterFixups(cancel_body);
+    try astgen.extra.ensureUnusedCapacity(
+        astgen.gpa,
+        @typeInfo(Zir.Inst.Suspend).@"struct".fields.len + suspend_body_len + cancel_body_len,
+    );
+
+    const zir_datas = astgen.instructions.items(.data);
+    zir_datas[@intFromEnum(suspend_inst)].pl_node.payload_index = astgen.addExtraAssumeCapacity(Zir.Inst.Suspend{
+        .body_len = suspend_body_len,
+        .cancel_body_len = cancel_body_len,
+    });
+
+    astgen.appendBodyWithFixups(suspend_body);
+    astgen.appendBodyWithFixups(cancel_body);
 }
 
 fn awaitExpr(

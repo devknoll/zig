@@ -2589,6 +2589,7 @@ fn analyzeFnBodyInner(pt: Zcu.PerThread, func_index: InternPool.Index) Zcu.SemaE
         .fn_ret_ty_ies = null,
         .branch_quota = @max(func.branchQuotaUnordered(ip), Sema.default_branch_quota),
         .comptime_err_ret_trace = &comptime_err_ret_trace,
+        .is_async = fn_ty_info.cc == .@"async",
     };
     defer sema.deinit();
 
@@ -2751,6 +2752,8 @@ fn analyzeFnBodyInner(pt: Zcu.PerThread, func_index: InternPool.Index) Zcu.SemaE
     }
 
     assert(zcu.analysis_in_progress.swapRemove(anal_unit));
+
+    func.setAsyncStatus(ip, if (sema.is_async) .yes_async else .not_async);
 
     // Finally we must resolve the return type and parameter types so that backends
     // have full access to type information.
@@ -3415,6 +3418,10 @@ pub fn errorUnionType(pt: Zcu.PerThread, error_set_ty: Type, payload_ty: Type) A
 pub fn singleErrorSetType(pt: Zcu.PerThread, name: InternPool.NullTerminatedString) Allocator.Error!Type {
     const names: *const [1]InternPool.NullTerminatedString = &name;
     return Type.fromInterned(try pt.zcu.intern_pool.getErrorSetType(pt.zcu.gpa, pt.tid, names));
+}
+
+pub fn asyncFrameType(pt: Zcu.PerThread, func_index: InternPool.Index) Allocator.Error!Type {
+    return Type.fromInterned(try pt.intern(.{ .async_frame_type = func_index }));
 }
 
 /// Sorts `names` in place.

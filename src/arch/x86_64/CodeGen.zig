@@ -20816,6 +20816,8 @@ fn genBody(cg: *CodeGen, body: []const Air.Inst.Index) InnerError!void {
             .call_always_tail => try cg.airCall(inst, .always_tail, .{ .safety = true }),
             .call_never_tail => try cg.airCall(inst, .never_tail, .{ .safety = true }),
             .call_never_inline => try cg.airCall(inst, .never_inline, .{ .safety = true }),
+            .call_async => try cg.airCall(inst, .async_kw, .{ .safety = true }),
+            .call_async_alloc => try cg.airCall(inst, .async_kw, .{ .safety = true }),
 
             .clz => |air_tag| if (use_old) try cg.airClz(inst) else {
                 const ty_op = air_datas[@intFromEnum(inst)].ty_op;
@@ -49825,6 +49827,8 @@ fn genBody(cg: *CodeGen, body: []const Air.Inst.Index) InnerError!void {
             .work_item_id => unreachable,
             .work_group_size => unreachable,
             .work_group_id => unreachable,
+
+            .@"suspend" => return cg.fail("TODO implement suspend", .{}),
         }
         try cg.resetTemps();
         cg.checkInvariantsAfterAirInst();
@@ -59622,6 +59626,7 @@ fn airFrameAddress(self: *CodeGen, inst: Air.Inst.Index) !void {
 
 fn airCall(self: *CodeGen, inst: Air.Inst.Index, modifier: std.builtin.CallModifier, opts: CopyOptions) !void {
     if (modifier == .always_tail) return self.fail("TODO implement tail calls for x86_64", .{});
+    if (modifier == .async_kw) return self.fail("TODO implement async calls for x86_64", .{});
 
     const pl_op = self.air.instructions.items(.data)[@intFromEnum(inst)].pl_op;
     const extra = self.air.extraData(Air.Call, pl_op.payload);
