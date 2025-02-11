@@ -956,6 +956,7 @@ pub const DeclGen = struct {
             .func_type,
             .error_set_type,
             .inferred_error_set_type,
+            .async_frame_type,
             // memoization, not values
             .memoized_call,
             => unreachable,
@@ -1805,6 +1806,7 @@ pub const DeclGen = struct {
                 .anyframe_type,
                 .opaque_type,
                 .func_type,
+                .async_frame_type,
                 => unreachable,
 
                 .undef,
@@ -3450,6 +3452,8 @@ fn genBodyInner(f: *Function, body: []const Air.Inst.Index) error{ AnalysisFail,
             .work_group_id,
             => unreachable,
 
+            .@"suspend" => return f.fail("TODO implement suspend", .{}),
+
             // Instructions that are known to always be `noreturn` based on their tag.
             .br              => return airBr(f, inst),
             .repeat          => return airRepeat(f, inst),
@@ -3483,6 +3487,8 @@ fn genBodyInner(f: *Function, body: []const Air.Inst.Index) error{ AnalysisFail,
             .call_always_tail  => .none,
             .call_never_tail   => try airCall(f, inst, .never_tail),
             .call_never_inline => try airCall(f, inst, .never_inline),
+            .call_async        => try airCall(f, inst, .async_kw),
+            .call_async_alloc  => try airCall(f, inst, .async_kw),
 
             // zig fmt: on
         };
@@ -4514,6 +4520,8 @@ fn airCall(
     inst: Air.Inst.Index,
     modifier: std.builtin.CallModifier,
 ) !CValue {
+    if (modifier == .async_kw) return f.fail("TODO: C backend: implement async calls", .{});
+
     const pt = f.object.dg.pt;
     const zcu = pt.zcu;
     const ip = &zcu.intern_pool;

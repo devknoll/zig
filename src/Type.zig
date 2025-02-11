@@ -396,6 +396,12 @@ pub fn print(ty: Type, writer: anytype, pt: Zcu.PerThread) @TypeOf(writer).Error
             try writer.writeAll("anyframe->");
             return print(Type.fromInterned(child), writer, pt);
         },
+        .async_frame_type => |fn_index| {
+            const func_nav = ip.getNav(zcu.funcInfo(fn_index).owner_nav);
+            try writer.print("@Frame({})", .{
+                func_nav.fqn.fmt(ip),
+            });
+        },
 
         // values, not types
         .undef,
@@ -516,6 +522,7 @@ pub fn hasRuntimeBitsInner(
             .error_union_type,
             .error_set_type,
             .inferred_error_set_type,
+            .async_frame_type,
             => true,
 
             // These are function *bodies*, not pointers.
@@ -683,6 +690,7 @@ pub fn hasWellDefinedLayout(ty: Type, zcu: *const Zcu) bool {
         .tuple_type,
         .opaque_type,
         .anyframe_type,
+        .async_frame_type,
         // These are function bodies, not function pointers.
         .func_type,
         => false,
@@ -1148,6 +1156,9 @@ pub fn abiAlignmentInner(
                 .scalar = Type.fromInterned(ip.loadEnumType(ty.toIntern()).tag_ty).abiAlignment(zcu),
             },
 
+            // TODO: Revisit this
+            .async_frame_type => return .{ .scalar = .@"16" },
+
             // values, not types
             .undef,
             .simple_value,
@@ -1533,6 +1544,21 @@ pub fn abiSizeInner(
             .opaque_type => unreachable, // no size available
             .enum_type => return .{ .scalar = Type.fromInterned(ip.loadEnumType(ty.toIntern()).tag_ty).abiSize(zcu) },
 
+            .async_frame_type => {
+                switch (strat) {
+                    .sema, .eager => unreachable,
+                    .lazy => {
+                        const pt = strat.pt(zcu, tid);
+                        return .{
+                            .val = Value.fromInterned(try pt.intern(.{ .int = .{
+                                .ty = .comptime_int_type,
+                                .storage = .{ .lazy_size = ty.toIntern() },
+                            } })),
+                        };
+                    },
+                }
+            },
+
             // values, not types
             .undef,
             .simple_value,
@@ -1854,6 +1880,9 @@ pub fn bitSizeInner(
         .opaque_type => unreachable,
         .enum_type => return Type.fromInterned(ip.loadEnumType(ty.toIntern()).tag_ty)
             .bitSizeInner(strat, zcu, tid),
+        .async_frame_type => {
+            @panic("TODO bitSize async_frame_type");
+        },
 
         // values, not types
         .undef,
@@ -2411,6 +2440,7 @@ pub fn intInfo(starting_ty: Type, zcu: *const Zcu) InternPool.Key.IntType {
 
             .ptr_type => unreachable,
             .anyframe_type => unreachable,
+            .async_frame_type => unreachable,
             .array_type => unreachable,
 
             .opt_type => unreachable,
@@ -2596,6 +2626,7 @@ pub fn onePossibleValue(starting_type: Type, pt: Zcu.PerThread) !?Value {
             .anyframe_type,
             .error_set_type,
             .inferred_error_set_type,
+            .async_frame_type,
             => return null,
 
             inline .array_type, .vector_type => |seq_type, seq_tag| {
@@ -2965,6 +2996,7 @@ pub fn comptimeOnlyInner(
             },
 
             .opaque_type => false,
+            .async_frame_type => false,
 
             .enum_type => return Type.fromInterned(ip.loadEnumType(ty.toIntern()).tag_ty).comptimeOnlyInner(strat, zcu, tid),
 

@@ -1950,6 +1950,8 @@ fn genInst(cg: *CodeGen, inst: Air.Inst.Index) InnerError!void {
         .call_always_tail => cg.airCall(inst, .always_tail),
         .call_never_tail => cg.airCall(inst, .never_tail),
         .call_never_inline => cg.airCall(inst, .never_inline),
+        .call_async => cg.airCall(inst, .async_kw),
+        .call_async_alloc => cg.airCall(inst, .async_kw),
 
         .is_err => cg.airIsErr(inst, .i32_ne),
         .is_non_err => cg.airIsErr(inst, .i32_eq),
@@ -2089,6 +2091,8 @@ fn genInst(cg: *CodeGen, inst: Air.Inst.Index) InnerError!void {
         .work_group_size,
         .work_group_id,
         => unreachable,
+
+        .@"suspend" => return cg.fail("TODO implement suspend", .{}),
     };
 }
 
@@ -2200,6 +2204,7 @@ fn airRetLoad(cg: *CodeGen, inst: Air.Inst.Index) InnerError!void {
 fn airCall(cg: *CodeGen, inst: Air.Inst.Index, modifier: std.builtin.CallModifier) InnerError!void {
     const wasm = cg.wasm;
     if (modifier == .always_tail) return cg.fail("TODO implement tail calls for wasm", .{});
+    if (modifier == .async_kw) return cg.fail("TODO implement async calls for wasm", .{});
     const pl_op = cg.air.instructions.items(.data)[@intFromEnum(inst)].pl_op;
     const extra = cg.air.extraData(Air.Call, pl_op.payload);
     const args: []const Air.Inst.Ref = @ptrCast(cg.air.extra[extra.end..][0..extra.data.args_len]);
@@ -3185,6 +3190,7 @@ fn lowerConstant(cg: *CodeGen, val: Value, ty: Type) InnerError!WValue {
         .func_type,
         .error_set_type,
         .inferred_error_set_type,
+        .async_frame_type,
         => unreachable, // types, not values
 
         .undef => unreachable, // handled above

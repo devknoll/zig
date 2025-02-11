@@ -642,6 +642,8 @@ fn genBody(self: *Self, body: []const Air.Inst.Index) InnerError!void {
             .call_always_tail  => try self.airCall(inst, .always_tail),
             .call_never_tail   => try self.airCall(inst, .never_tail),
             .call_never_inline => try self.airCall(inst, .never_inline),
+            .call_async        => try self.airCall(inst, .async_kw),
+            .call_async_alloc  => try self.airCall(inst, .async_kw),
 
             .atomic_store_unordered => @panic("TODO try self.airAtomicStore(inst, .unordered)"),
             .atomic_store_monotonic => @panic("TODO try self.airAtomicStore(inst, .monotonic)"),
@@ -730,6 +732,8 @@ fn genBody(self: *Self, body: []const Air.Inst.Index) InnerError!void {
             .work_item_id => unreachable,
             .work_group_size => unreachable,
             .work_group_id => unreachable,
+
+            .@"suspend" => return self.fail("TODO implement suspend", .{}),
             // zig fmt: on
         }
 
@@ -1286,6 +1290,7 @@ fn airByteSwap(self: *Self, inst: Air.Inst.Index) !void {
 
 fn airCall(self: *Self, inst: Air.Inst.Index, modifier: std.builtin.CallModifier) !void {
     if (modifier == .always_tail) return self.fail("TODO implement tail calls for {}", .{self.target.cpu.arch});
+    if (modifier == .async_kw) return self.fail("TODO implement async calls for {}", .{self.target.cpu.arch});
 
     const pl_op = self.air.instructions.items(.data)[@intFromEnum(inst)].pl_op;
     const callee = pl_op.operand;

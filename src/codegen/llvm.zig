@@ -774,6 +774,24 @@ const DataLayoutBuilder = struct {
     }
 };
 
+/// Async scope
+pub const AsyncScope = struct {
+    /// Token of the coroutine.
+    token: Builder.Value,
+
+    /// Final block of the coroutine.
+    final_block: Builder.WipFunction.Block.Index,
+
+    /// Data for resuming.
+    resume_info: ?ResumeInfo,
+
+    pub const ResumeInfo = struct {
+        resume_block: Builder.WipFunction.Block.Index,
+        cancel_block: Builder.WipFunction.Block.Index,
+        save_token: Builder.Value,
+    };
+};
+
 pub const Object = struct {
     gpa: Allocator,
     builder: Builder,
@@ -1517,6 +1535,12 @@ pub const Object = struct {
         var args: std.ArrayListUnmanaged(Builder.Value) = .empty;
         defer args.deinit(gpa);
 
+        const is_async = func.asyncStatusUnordered(ip) == .yes_async;
+
+        if (is_async) {
+            try attributes.addFnAttr(.presplitcoroutine, &o.builder);
+        }
+
         {
             var it = iterateParamTypes(o, fn_info);
             while (try it.next()) |lowering| {
@@ -1533,7 +1557,7 @@ pub const Object = struct {
                         if (isByRef(param_ty, zcu)) {
                             const alignment = param_ty.abiAlignment(zcu).toLlvm();
                             const param_llvm_ty = param.typeOfWip(&wip);
-                            const arg_ptr = try buildAllocaInner(&wip, param_llvm_ty, alignment, target);
+                            const arg_ptr = try buildAllocaInner(&wip, param_llvm_ty, .none, alignment, target);
                             _ = try wip.store(.normal, param, arg_ptr, alignment);
                             args.appendAssumeCapacity(arg_ptr);
                         } else {
@@ -1581,7 +1605,7 @@ pub const Object = struct {
 
                         const param_llvm_ty = try o.lowerType(param_ty);
                         const alignment = param_ty.abiAlignment(zcu).toLlvm();
-                        const arg_ptr = try buildAllocaInner(&wip, param_llvm_ty, alignment, target);
+                        const arg_ptr = try buildAllocaInner(&wip, param_llvm_ty, .none, alignment, target);
                         _ = try wip.store(.normal, param, arg_ptr, alignment);
 
                         args.appendAssumeCapacity(if (isByRef(param_ty, zcu))
@@ -1626,7 +1650,7 @@ pub const Object = struct {
                         const param_ty = Type.fromInterned(fn_info.param_types.get(ip)[it.zig_index - 1]);
                         const param_llvm_ty = try o.lowerType(param_ty);
                         const param_alignment = param_ty.abiAlignment(zcu).toLlvm();
-                        const arg_ptr = try buildAllocaInner(&wip, param_llvm_ty, param_alignment, target);
+                        const arg_ptr = try buildAllocaInner(&wip, param_llvm_ty, .none, param_alignment, target);
                         const llvm_ty = try o.builder.structType(.normal, field_types);
                         for (0..field_types.len) |field_i| {
                             const param = wip.arg(llvm_arg_i);
@@ -1650,7 +1674,7 @@ pub const Object = struct {
                         llvm_arg_i += 1;
 
                         const alignment = param_ty.abiAlignment(zcu).toLlvm();
-                        const arg_ptr = try buildAllocaInner(&wip, param_llvm_ty, alignment, target);
+                        const arg_ptr = try buildAllocaInner(&wip, param_llvm_ty, .none, alignment, target);
                         _ = try wip.store(.normal, param, arg_ptr, alignment);
 
                         args.appendAssumeCapacity(if (isByRef(param_ty, zcu))
@@ -1665,7 +1689,7 @@ pub const Object = struct {
                         llvm_arg_i += 1;
 
                         const alignment = param_ty.abiAlignment(zcu).toLlvm();
-                        const arg_ptr = try buildAllocaInner(&wip, param.typeOfWip(&wip), alignment, target);
+                        const arg_ptr = try buildAllocaInner(&wip, param.typeOfWip(&wip), .none, alignment, target);
                         _ = try wip.store(.normal, param, arg_ptr, alignment);
 
                         args.appendAssumeCapacity(if (isByRef(param_ty, zcu))
@@ -1733,6 +1757,35 @@ pub const Object = struct {
             };
         };
 
+        const async_scope = switch (is_async) {
+            true => blk: {
+                const null_value = try o.builder.nullValue(.ptr);
+                const async_token = try wip.callIntrinsic(.normal, .none, .@"coro.id", &.{}, &.{
+                    try o.builder.intValue(.i32, 0),
+                    null_value,
+                    null_value,
+                    null_value,
+                }, "");
+                _ = try wip.callIntrinsic(.normal, .none, .@"coro.begin.custom.abi", &.{}, &.{ async_token, null_value, try o.builder.intValue(.i32, 0) }, "");
+
+                const prev_cursor = wip.cursor;
+                const final_block = try wip.block(0, "Final");
+
+                {
+                    wip.cursor = .{ .block = final_block };
+                    defer wip.cursor = prev_cursor;
+
+                    const coro_ptr = try wip.callIntrinsic(.normal, .none, .@"coro.frame", &.{}, &.{}, "");
+                    _ = try wip.callIntrinsic(.normal, .none, .@"coro.end", &.{}, &.{ coro_ptr, try o.builder.intValue(.i1, 0), try o.builder.noneValue(.token) }, "");
+                    _ = try wip.retVoid();
+                }
+
+                const async_scope = AsyncScope{ .token = async_token, .final_block = final_block, .resume_info = null };
+                break :blk async_scope;
+            },
+            false => null,
+        };
+
         var fg: FuncGen = .{
             .gpa = gpa,
             .air = air,
@@ -1756,6 +1809,7 @@ pub const Object = struct {
             .prev_dbg_line = 0,
             .prev_dbg_column = 0,
             .err_ret_trace = err_ret_trace,
+            .async_scope = async_scope,
         };
         defer fg.deinit();
         deinit_wip = false;
@@ -2840,7 +2894,27 @@ pub const Object = struct {
             .null => unreachable,
             .enum_literal => unreachable,
 
-            .frame => @panic("TODO implement lowerDebugType for Frame types"),
+            .frame => {
+                const func_index = ip.indexToKey(ty.toIntern()).async_frame_type;
+                const func = zcu.funcInfo(func_index);
+                _ = func;
+
+                const elem_di_ty = try o.lowerDebugType(Type.u8);
+                const name = try o.allocTypeName(ty);
+                defer gpa.free(name);
+                const ptr_di_ty = try o.builder.debugPointerType(
+                    try o.builder.metadataString(name),
+                    .none,
+                    .none,
+                    0,
+                    elem_di_ty,
+                    target.ptrBitWidth(),
+                    target.ptrBitWidth() * 2, // alignment
+                    0,
+                );
+                try o.debug_type_map.put(gpa, ty, ptr_di_ty);
+                return ptr_di_ty;
+            },
             .@"anyframe" => @panic("TODO implement lowerDebugType for AnyFrame types"),
         }
     }
@@ -2920,9 +2994,12 @@ pub const Object = struct {
         const gpa = o.gpa;
         const nav = ip.getNav(nav_index);
         const owner_mod = zcu.navFileScope(nav_index).mod;
-        const ty: Type = .fromInterned(nav.typeOf(ip));
+        const func = nav.typeOf(ip);
+        const ty: Type = .fromInterned(func);
         const gop = try o.nav_map.getOrPut(gpa, nav_index);
         if (gop.found_existing) return gop.value_ptr.ptr(&o.builder).kind.function;
+
+        // pt.ensureFuncBodyUpToDate(func) catch return Allocator.Error.OutOfMemory;
 
         const fn_info = zcu.typeToFunc(ty).?;
         const target = owner_mod.resolved_target.result;
@@ -3418,6 +3495,7 @@ pub const Object = struct {
                     return o.builder.structType(.normal, fields[0..fields_len]);
                 },
                 .anyframe_type => @panic("TODO implement lowerType for AnyFrame types"),
+                .async_frame_type => @panic("TODO implement lowerType for AnyFrame types"),
                 .error_union_type => |error_union_type| {
                     // Must stay in sync with `codegen.errUnionPayloadOffset`.
                     // See logic in `lowerPtr`.
@@ -3912,6 +3990,7 @@ pub const Object = struct {
             .func_type,
             .error_set_type,
             .inferred_error_set_type,
+            .async_frame_type,
             => unreachable, // types, not values
 
             .undef => unreachable, // handled above
@@ -4924,6 +5003,9 @@ pub const FuncGen = struct {
 
     sync_scope: Builder.SyncScope,
 
+    /// Async scope
+    async_scope: ?AsyncScope,
+
     const Fuzz = struct {
         counters_variable: Builder.Variable.Index,
         pcs: std.ArrayListUnmanaged(Builder.Constant),
@@ -5276,6 +5358,7 @@ pub const FuncGen = struct {
                 .work_item_id => try self.airWorkItemId(inst),
                 .work_group_size => try self.airWorkGroupSize(inst),
                 .work_group_id => try self.airWorkGroupId(inst),
+                .@"suspend"   => try self.airSuspend(inst),
 
                 // Instructions that are known to always be `noreturn` based on their tag.
                 .br              => return self.airBr(inst),
@@ -5302,12 +5385,13 @@ pub const FuncGen = struct {
                     if (self.typeOfIndex(inst).isNoReturn(zcu)) return;
                     break :res res;
                 },
-                .call, .call_always_tail, .call_never_tail, .call_never_inline => |tag| res: {
+                .call, .call_always_tail, .call_never_tail, .call_never_inline, .call_async => |tag| res: {
                     const res = try self.airCall(inst, switch (tag) {
                         .call              => .auto,
                         .call_always_tail  => .always_tail,
                         .call_never_tail   => .never_tail,
                         .call_never_inline => .never_inline,
+                        .call_async        => .async_kw,
                         else               => unreachable,
                     });
                     // TODO: the AIR we emit for calls is a bit weird - the instruction has
@@ -5316,6 +5400,7 @@ pub const FuncGen = struct {
                     //if (self.typeOfIndex(inst).isNoReturn(mod)) return;
                     break :res res;
                 },
+                .call_async_alloc => try self.airCallAsyncAlloc(inst),
 
                 // zig fmt: on
             };
@@ -5423,14 +5508,55 @@ pub const FuncGen = struct {
         AlwaysInline,
     };
 
+    fn airCallAsyncAlloc(self: *FuncGen, inst: Air.Inst.Index) !Builder.Value {
+        const ty_pl = self.air.instructions.items(.data)[@intFromEnum(inst)].ty_pl;
+        const extra = self.air.extraData(Air.AsyncCallAlloc, ty_pl.payload);
+        // const args: []const Air.Inst.Ref = @ptrCast(self.air.extra[extra.end..][0..extra.data.args_len]);
+        const o = self.ng.object;
+        const pt = o.pt;
+        const zcu = pt.zcu;
+        const callee = try self.resolveInst(extra.data.callee);
+        // const callee_ty = self.typeOf(extra.data.callee);
+        // const zig_fn_ty = switch (callee_ty.zigTypeTag(zcu)) {
+        //     .@"fn" => callee_ty,
+        //     .pointer => callee_ty.childType(zcu),
+        //     else => unreachable,
+        // };
+        // const fn_info = zcu.typeToFunc(zig_fn_ty).?;
+        const target = zcu.getTarget();
+
+        var llvm_args = std.ArrayList(Builder.Value).init(self.gpa);
+        defer llvm_args.deinit();
+
+        var attributes: Builder.FunctionAttributes.Wip = .{};
+        defer attributes.deinit(&o.builder);
+
+        const l = AsyncFuncPtrLayout.create();
+        const afp = try self.lowerAsyncFuncPtr();
+        const afp_ptr_ptr = try self.wip.gep(.inbounds, .ptr, callee, &.{
+            try o.builder.intValue(.i32, -1),
+        }, "");
+        const afp_ptr = try self.wip.load(.normal, .ptr, afp_ptr_ptr, .default, "");
+        const afp_size_ptr = try self.wip.gepStruct(afp.ty, afp_ptr, l.context_size, "");
+
+        const address_space = llvmAllocaAddressSpace(target);
+        const afp_size = try self.wip.load(.normal, afp.fields[l.context_size], afp_size_ptr, .default, "");
+        const frame_alloca = try self.wip.alloca(.normal, .i8, afp_size, .default, address_space, "");
+        const frame_ptr = try self.wip.cast(.bitcast, frame_alloca, .ptr, "");
+
+        // try self.addCallArgs(args, &llvm_args, fn_info, &attributes, sret, err_return_tracing);
+
+        return frame_ptr;
+    }
+
     fn airCall(self: *FuncGen, inst: Air.Inst.Index, modifier: std.builtin.CallModifier) !Builder.Value {
+        if (modifier == .async_kw) return self.todo("implement async calls for llvm", .{});
         const pl_op = self.air.instructions.items(.data)[@intFromEnum(inst)].pl_op;
         const extra = self.air.extraData(Air.Call, pl_op.payload);
         const args: []const Air.Inst.Ref = @ptrCast(self.air.extra[extra.end..][0..extra.data.args_len]);
         const o = self.ng.object;
         const pt = o.pt;
         const zcu = pt.zcu;
-        const ip = &zcu.intern_pool;
         const callee_ty = self.typeOf(pl_op.operand);
         const zig_fn_ty = switch (callee_ty.zigTypeTag(zcu)) {
             .@"fn" => callee_ty,
@@ -5474,6 +5600,84 @@ pub const FuncGen = struct {
             assert(self.err_ret_trace != .none);
             try llvm_args.append(self.err_ret_trace);
         }
+
+        try self.addCallArgs(args, &llvm_args, fn_info, &attributes, sret, err_return_tracing);
+
+        const call = try self.wip.call(
+            switch (modifier) {
+                .auto, .never_inline => .normal,
+                .never_tail => .notail,
+                .always_tail => .musttail,
+                .async_kw, .no_async, .always_inline, .compile_time => unreachable,
+            },
+            toLlvmCallConvTag(fn_info.cc, target).?,
+            try attributes.finish(&o.builder),
+            try o.lowerType(zig_fn_ty),
+            llvm_fn,
+            llvm_args.items,
+            "",
+        );
+
+        if (fn_info.return_type == .noreturn_type and modifier != .always_tail) {
+            return .none;
+        }
+
+        if (self.liveness.isUnused(inst) or !return_type.hasRuntimeBitsIgnoreComptime(zcu)) {
+            return .none;
+        }
+
+        const llvm_ret_ty = try o.lowerType(return_type);
+        if (ret_ptr) |rp| {
+            if (isByRef(return_type, zcu)) {
+                return rp;
+            } else {
+                // our by-ref status disagrees with sret so we must load.
+                const return_alignment = return_type.abiAlignment(zcu).toLlvm();
+                return self.wip.load(.normal, llvm_ret_ty, rp, return_alignment, "");
+            }
+        }
+
+        const abi_ret_ty = try lowerFnRetTy(o, fn_info);
+
+        if (abi_ret_ty != llvm_ret_ty) {
+            // In this case the function return type is honoring the calling convention by having
+            // a different LLVM type than the usual one. We solve this here at the callsite
+            // by using our canonical type, then loading it if necessary.
+            const alignment = return_type.abiAlignment(zcu).toLlvm();
+            const rp = try self.buildAlloca(abi_ret_ty, alignment);
+            _ = try self.wip.store(.normal, call, rp, alignment);
+            return if (isByRef(return_type, zcu))
+                rp
+            else
+                try self.wip.load(.normal, llvm_ret_ty, rp, alignment, "");
+        }
+
+        if (isByRef(return_type, zcu)) {
+            // our by-ref status disagrees with sret so we must allocate, store,
+            // and return the allocation pointer.
+            const alignment = return_type.abiAlignment(zcu).toLlvm();
+            const rp = try self.buildAlloca(llvm_ret_ty, alignment);
+            _ = try self.wip.store(.normal, call, rp, alignment);
+            return rp;
+        } else {
+            return call;
+        }
+    }
+
+    fn addCallArgs(
+        self: *FuncGen,
+        args: []const Air.Inst.Ref,
+        llvm_args: *std.ArrayList(Builder.Value),
+        fn_info: InternPool.Key.FuncType,
+        attributes: *Builder.FunctionAttributes.Wip,
+        sret: bool,
+        err_return_tracing: bool,
+    ) !void {
+        const o = self.ng.object;
+        const pt = o.pt;
+        const zcu = pt.zcu;
+        const target = zcu.getTarget();
+        const ip = &zcu.intern_pool;
 
         var it = iterateParamTypes(o, fn_info);
         while (try it.nextCall(self, args)) |lowering| switch (lowering) {
@@ -5617,7 +5821,7 @@ pub const FuncGen = struct {
                     const param_index = it.zig_index - 1;
                     const param_ty = Type.fromInterned(fn_info.param_types.get(ip)[param_index]);
                     if (!isByRef(param_ty, zcu)) {
-                        try o.addByValParamAttrs(&attributes, param_ty, param_index, fn_info, it.llvm_index - 1);
+                        try o.addByValParamAttrs(attributes, param_ty, param_index, fn_info, it.llvm_index - 1);
                     }
                 },
                 .byref => {
@@ -5625,7 +5829,7 @@ pub const FuncGen = struct {
                     const param_ty = Type.fromInterned(fn_info.param_types.get(ip)[param_index]);
                     const param_llvm_ty = try o.lowerType(param_ty);
                     const alignment = param_ty.abiAlignment(zcu).toLlvm();
-                    try o.addByRefParamAttrs(&attributes, it.llvm_index - 1, alignment, it.byval_attr, param_llvm_ty);
+                    try o.addByRefParamAttrs(attributes, it.llvm_index - 1, alignment, it.byval_attr, param_llvm_ty);
                 },
                 .byref_mut => try attributes.addParamAttr(it.llvm_index - 1, .noundef, &o.builder),
                 // No attributes needed for these.
@@ -5662,66 +5866,6 @@ pub const FuncGen = struct {
                 },
             };
         }
-
-        const call = try self.wip.call(
-            switch (modifier) {
-                .auto, .never_inline => .normal,
-                .never_tail => .notail,
-                .always_tail => .musttail,
-                .async_kw, .no_async, .always_inline, .compile_time => unreachable,
-            },
-            toLlvmCallConvTag(fn_info.cc, target).?,
-            try attributes.finish(&o.builder),
-            try o.lowerType(zig_fn_ty),
-            llvm_fn,
-            llvm_args.items,
-            "",
-        );
-
-        if (fn_info.return_type == .noreturn_type and modifier != .always_tail) {
-            return .none;
-        }
-
-        if (self.liveness.isUnused(inst) or !return_type.hasRuntimeBitsIgnoreComptime(zcu)) {
-            return .none;
-        }
-
-        const llvm_ret_ty = try o.lowerType(return_type);
-        if (ret_ptr) |rp| {
-            if (isByRef(return_type, zcu)) {
-                return rp;
-            } else {
-                // our by-ref status disagrees with sret so we must load.
-                const return_alignment = return_type.abiAlignment(zcu).toLlvm();
-                return self.wip.load(.normal, llvm_ret_ty, rp, return_alignment, "");
-            }
-        }
-
-        const abi_ret_ty = try lowerFnRetTy(o, fn_info);
-
-        if (abi_ret_ty != llvm_ret_ty) {
-            // In this case the function return type is honoring the calling convention by having
-            // a different LLVM type than the usual one. We solve this here at the callsite
-            // by using our canonical type, then loading it if necessary.
-            const alignment = return_type.abiAlignment(zcu).toLlvm();
-            const rp = try self.buildAlloca(abi_ret_ty, alignment);
-            _ = try self.wip.store(.normal, call, rp, alignment);
-            return if (isByRef(return_type, zcu))
-                rp
-            else
-                try self.wip.load(.normal, llvm_ret_ty, rp, alignment, "");
-        }
-
-        if (isByRef(return_type, zcu)) {
-            // our by-ref status disagrees with sret so we must allocate, store,
-            // and return the allocation pointer.
-            const alignment = return_type.abiAlignment(zcu).toLlvm();
-            const rp = try self.buildAlloca(llvm_ret_ty, alignment);
-            _ = try self.wip.store(.normal, call, rp, alignment);
-            return rp;
-        } else {
-            return call;
-        }
     }
 
     fn buildSimplePanic(fg: *FuncGen, panic_id: Zcu.SimplePanicId) !void {
@@ -5747,7 +5891,28 @@ pub const FuncGen = struct {
         _ = try fg.wip.@"unreachable"();
     }
 
+    fn lowerAsyncFuncPtr(fg: *FuncGen) !struct { ty: Builder.Type, fields: [2]Builder.Type } {
+        const o = fg.ng.object;
+        const l = AsyncFuncPtrLayout.create();
+        var fields: [2]Builder.Type = undefined;
+        fields[l.ptr_to_func] = .ptr;
+        fields[l.context_size] = .i32;
+        return .{ .ty = try o.builder.structType(.normal, &fields), .fields = fields };
+    }
+
+    fn lowerAsyncFrame(fg: *FuncGen) !struct { ty: Builder.Type, fields: [1]Builder.Type } {
+        const o = fg.ng.object;
+        const l = AsyncFrameLayout.create();
+        var fields: [1]Builder.Type = undefined;
+        fields[l.resume_ptr] = .ptr;
+        return .{ .ty = try o.builder.structType(.normal, &fields), .fields = fields };
+    }
+
     fn airRet(self: *FuncGen, inst: Air.Inst.Index, safety: bool) !void {
+        if (try self.lowerAsyncRetPreamble() == true) {
+            return;
+        }
+
         const o = self.ng.object;
         const pt = o.pt;
         const zcu = pt.zcu;
@@ -7270,6 +7435,51 @@ pub const FuncGen = struct {
     fn airUnreach(self: *FuncGen, inst: Air.Inst.Index) !void {
         _ = inst;
         _ = try self.wip.@"unreachable"();
+    }
+
+    fn airSuspend(self: *FuncGen, inst: Air.Inst.Index) !Builder.Value {
+        const pl_op = self.air.instructions.items(.data)[@intFromEnum(inst)].pl_op;
+        const extra = self.air.extraData(Air.Suspend, pl_op.payload);
+        const suspend_body: []const Air.Inst.Index = @ptrCast(self.air.extra[extra.end..][0..extra.data.body_len]);
+        const cancel_body: []const Air.Inst.Index = @ptrCast(self.air.extra[extra.end + suspend_body.len ..][0..extra.data.cancel_body_len]);
+
+        const cancel_block = try self.wip.block(1, "CancelSuspend");
+        const resume_block = try self.wip.block(1, "ResumeSuspend");
+
+        const coro_ptr = try self.wip.callIntrinsic(.normal, .none, .@"coro.frame", &.{}, &.{}, "");
+        const save_token = try self.wip.callIntrinsic(.normal, .none, .@"coro.save", &.{}, &.{coro_ptr}, "");
+
+        self.async_scope.?.resume_info = AsyncScope.ResumeInfo{
+            .cancel_block = cancel_block,
+            .resume_block = resume_block,
+            .save_token = save_token,
+        };
+        try self.genBodyDebugScope(null, suspend_body, .none);
+        self.async_scope.?.resume_info = null;
+
+        self.wip.cursor = .{ .block = cancel_block };
+        try self.genBodyDebugScope(null, cancel_body, .none);
+
+        self.wip.cursor = .{ .block = resume_block };
+        return .none;
+    }
+
+    fn lowerAsyncRetPreamble(self: *FuncGen) !bool {
+        if (self.async_scope) |async_scope| {
+            const o = self.ng.object;
+            if (async_scope.resume_info) |resume_info| {
+                const result = try self.wip.callIntrinsic(.normal, .none, .@"coro.suspend", &.{}, &.{ resume_info.save_token, try o.builder.intValue(.i1, 0) }, "");
+                var wipSwitch = try self.wip.@"switch"(result, async_scope.final_block, 2, .none);
+                defer wipSwitch.finish(&self.wip);
+                try wipSwitch.addCase(try o.builder.intConst(.i8, 0), resume_info.resume_block, &self.wip);
+                try wipSwitch.addCase(try o.builder.intConst(.i8, 1), resume_info.cancel_block, &self.wip);
+            } else {
+                async_scope.final_block.ptr(&self.wip).incoming += 1;
+                _ = try self.wip.br(async_scope.final_block);
+            }
+            return true;
+        }
+        return false;
     }
 
     fn airDbgStmt(self: *FuncGen, inst: Air.Inst.Index) !Builder.Value {
@@ -9684,7 +9894,7 @@ pub const FuncGen = struct {
         alignment: Builder.Alignment,
     ) Allocator.Error!Builder.Value {
         const target = self.ng.object.pt.zcu.getTarget();
-        return buildAllocaInner(&self.wip, llvm_ty, alignment, target);
+        return buildAllocaInner(&self.wip, llvm_ty, .none, alignment, target);
     }
 
     // Workaround for https://github.com/ziglang/zig/issues/16392
@@ -12785,6 +12995,7 @@ fn compilerRtIntBits(bits: u16) u16 {
 fn buildAllocaInner(
     wip: *Builder.WipFunction,
     llvm_ty: Builder.Type,
+    len: Builder.Value,
     alignment: Builder.Alignment,
     target: std.Target,
 ) Allocator.Error!Builder.Value {
@@ -12801,7 +13012,7 @@ fn buildAllocaInner(
 
         wip.cursor = .{ .block = .entry };
         wip.debug_location = .no_location;
-        break :blk try wip.alloca(.normal, llvm_ty, .none, alignment, address_space, "");
+        break :blk try wip.alloca(.normal, llvm_ty, len, alignment, address_space, "");
     };
 
     // The pointer returned from this function should have the generic address space,
@@ -13074,3 +13285,30 @@ fn maxIntConst(b: *Builder, max_ty: Type, as_ty: Builder.Type, zcu: *const Zcu) 
     try res.setTwosCompIntLimit(.max, info.signedness, info.bits);
     return b.bigIntConst(as_ty, res.toConst());
 }
+
+/// The LLVM Async Function Pointer Layout
+const AsyncFuncPtrLayout = struct {
+    /// Pointer to the async function.
+    ptr_to_func: u16,
+    /// Size of the async context object.
+    context_size: u16,
+
+    fn create() AsyncFuncPtrLayout {
+        return .{
+            .ptr_to_func = 0,
+            .context_size = 1,
+        };
+    }
+};
+
+/// The async frame layout
+const AsyncFrameLayout = struct {
+    /// Pointer to the next function to run.
+    resume_ptr: u16,
+
+    fn create() AsyncFrameLayout {
+        return .{
+            .resume_ptr = 0,
+        };
+    }
+};

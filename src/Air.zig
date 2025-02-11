@@ -315,6 +315,14 @@ pub const Inst = struct {
         call_never_tail,
         /// Same as `call` except with the `never_inline` attribute.
         call_never_inline,
+        /// Async function call, using a provided frame pointer.
+        /// Uses `pl_op` field with the `AsyncCall` payload. operand is the callee.
+        /// Result type is always void.
+        call_async,
+        /// Async function call, which allocates the frame for the callee on the stack.
+        /// This instruction also acts as an alloc.
+        /// Uses `ty_pl` field with the `AsyncCallAlloc` payload.
+        call_async_alloc,
         /// Count leading zeroes of an integer according to its representation in twos complement.
         /// Result type will always be an unsigned integer big enough to fit the answer.
         /// Uses the `ty_op` field.
@@ -864,6 +872,11 @@ pub const Inst = struct {
         /// Operand is unused and set to Ref.none
         work_group_id,
 
+        /// Implements the suspend block.
+        /// Uses the `pl_op` field, payload is `Suspend`.
+        /// Operand is unused and set to Ref.none
+        @"suspend",
+
         pub fn fromCmpOp(op: std.math.CompareOperator, optimized: bool) Tag {
             switch (op) {
                 .lt => return if (optimized) .cmp_lt_optimized else .cmp_lt,
@@ -1160,6 +1173,14 @@ pub const Block = struct {
     body_len: u32,
 };
 
+/// This data is stored inside extra, with two sets of trailing `Inst.Ref`:
+/// * 0. the then body, according to `body_len`.
+/// * 1. the cancel body, according to `cancel_body_len`.
+pub const Suspend = struct {
+    body_len: u32,
+    cancel_body_len: u32,
+};
+
 /// Trailing is a list of instruction indexes for every `body_len`.
 pub const DbgInlineBlock = struct {
     func: InternPool.Index,
@@ -1168,6 +1189,18 @@ pub const DbgInlineBlock = struct {
 
 /// Trailing is a list of `Inst.Ref` for every `args_len`.
 pub const Call = struct {
+    args_len: u32,
+};
+
+/// Trailing is a list of `Inst.Ref` for every `args_len`.
+pub const AsyncCall = struct {
+    frame_ptr: Inst.Ref,
+    args_len: u32,
+};
+
+/// Trailing is a list of `Inst.Ref` for every `args_len`.
+pub const AsyncCallAlloc = struct {
+    callee: Inst.Ref,
     args_len: u32,
 };
 
@@ -1455,6 +1488,7 @@ pub fn typeOfIndex(air: *const Air, inst: Air.Inst.Index, ip: *const InternPool)
         .ptr_sub,
         .try_ptr,
         .try_ptr_cold,
+        .call_async_alloc,
         => return datas[@intFromEnum(inst)].ty_pl.ty.toType(),
 
         .not,
@@ -1534,6 +1568,8 @@ pub fn typeOfIndex(air: *const Air, inst: Air.Inst.Index, ip: *const InternPool)
         .set_err_return_trace,
         .vector_store_elem,
         .c_va_end,
+        .call_async,
+        .@"suspend",
         => return Type.void,
 
         .slice_len,
@@ -1666,6 +1702,8 @@ pub fn mustLower(air: Air, inst: Air.Inst.Index, ip: *const InternPool) bool {
         .call_always_tail,
         .call_never_tail,
         .call_never_inline,
+        .call_async,
+        .call_async_alloc,
         .cond_br,
         .switch_br,
         .loop_switch_br,
@@ -1711,6 +1749,7 @@ pub fn mustLower(air: Air, inst: Air.Inst.Index, ip: *const InternPool) bool {
         .sub_safe,
         .mul_safe,
         .intcast_safe,
+        .@"suspend",
         => true,
 
         .add,

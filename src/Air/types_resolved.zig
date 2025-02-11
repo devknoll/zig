@@ -336,6 +336,20 @@ fn checkBody(air: Air, body: []const Air.Inst.Index, zcu: *Zcu) bool {
                 for (args) |arg| if (!checkRef(arg, zcu)) return false;
             },
 
+            .call_async => {
+                const extra = air.extraData(Air.AsyncCall, data.pl_op.payload);
+                const args: []const Air.Inst.Ref = @ptrCast(air.extra[extra.end..][0..extra.data.args_len]);
+                if (!checkRef(data.pl_op.operand, zcu)) return false;
+                for (args) |arg| if (!checkRef(arg, zcu)) return false;
+            },
+
+            .call_async_alloc => {
+                const extra = air.extraData(Air.AsyncCallAlloc, data.ty_pl.payload);
+                const args: []const Air.Inst.Ref = @ptrCast(air.extra[extra.end..][0..extra.data.args_len]);
+                if (!checkType(data.ty_pl.ty.toType(), zcu)) return false;
+                for (args) |arg| if (!checkRef(arg, zcu)) return false;
+            },
+
             .dbg_var_ptr,
             .dbg_var_val,
             .dbg_arg_inline,
@@ -375,6 +389,20 @@ fn checkBody(air: Air, body: []const Air.Inst.Index, zcu: *Zcu) bool {
                 if (!checkBody(
                     air,
                     @ptrCast(air.extra[extra.end + extra.data.then_body_len ..][0..extra.data.else_body_len]),
+                    zcu,
+                )) return false;
+            },
+
+            .@"suspend" => {
+                const extra = air.extraData(Air.Suspend, data.pl_op.payload);
+                if (!checkBody(
+                    air,
+                    @ptrCast(air.extra[extra.end..][0..extra.data.body_len]),
+                    zcu,
+                )) return false;
+                if (!checkBody(
+                    air,
+                    @ptrCast(air.extra[extra.end + extra.data.body_len ..][0..extra.data.cancel_body_len]),
                     zcu,
                 )) return false;
             },
@@ -477,7 +505,7 @@ pub fn checkType(ty: Type, zcu: *Zcu) bool {
 
         .frame,
         .@"anyframe",
-        => @panic("TODO Air.types_resolved.checkType async frames"),
+        => true,
 
         .optional => checkType(ty.childType(zcu), zcu),
         .error_union => checkType(ty.errorUnionPayload(zcu), zcu),

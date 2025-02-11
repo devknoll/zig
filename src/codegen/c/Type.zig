@@ -1967,6 +1967,7 @@ pub const Pool = struct {
                     return pool.fromFields(allocator, .@"struct", &fields, kind);
                 },
                 .anyframe_type => unreachable,
+                .async_frame_type => unreachable,
                 .error_union_type => |error_union_info| {
                     const error_set_bits = pt.zcu.errorSetBits();
                     const error_set_ctype = try pool.fromIntInfo(allocator, .{

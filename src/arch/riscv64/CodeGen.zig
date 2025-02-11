@@ -1620,6 +1620,8 @@ fn genBody(func: *Func, body: []const Air.Inst.Index) InnerError!void {
             .call_always_tail  => try func.airCall(inst, .always_tail),
             .call_never_tail   => try func.airCall(inst, .never_tail),
             .call_never_inline => try func.airCall(inst, .never_inline),
+            .call_async        => try func.airCall(inst, .async_kw),
+            .call_async_alloc  => try func.airCall(inst, .async_kw),
 
             .atomic_store_unordered => try func.airAtomicStore(inst, .unordered),
             .atomic_store_monotonic => try func.airAtomicStore(inst, .monotonic),
@@ -1701,6 +1703,8 @@ fn genBody(func: *Func, body: []const Air.Inst.Index) InnerError!void {
             .work_item_id => unreachable,
             .work_group_size => unreachable,
             .work_group_id => unreachable,
+
+            .@"suspend" => return func.fail("TODO implement suspend", .{}),
             // zig fmt: on
         }
 
@@ -4782,6 +4786,7 @@ fn airFrameAddress(func: *Func, inst: Air.Inst.Index) !void {
 
 fn airCall(func: *Func, inst: Air.Inst.Index, modifier: std.builtin.CallModifier) !void {
     if (modifier == .always_tail) return func.fail("TODO implement tail calls for riscv64", .{});
+    if (modifier == .async_kw) return func.fail("TODO implement async calls for riscv64", .{});
     const pl_op = func.air.instructions.items(.data)[@intFromEnum(inst)].pl_op;
     const callee = pl_op.operand;
     const extra = func.air.extraData(Air.Call, pl_op.payload);
